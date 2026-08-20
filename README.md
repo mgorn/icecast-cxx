@@ -2,70 +2,48 @@
 
 A modern, modular C++ interface for interacting with Icecast servers.
 
-> **Project status:** early implementation phase. The build/package scaffold and foundational `icecast::core` API are implemented. Streaming, administration, native/browser transports, and source publishing are still under development and should not yet be treated as working Icecast networking functionality.
+> **Project status:** early implementation phase. `icecast::core` and the transport-independent portions of `icecast::stream` are implemented. Administrative functionality, native/browser networking, and source-publishing backends are still under development; the project does not yet provide a complete network-connected Icecast client.
 
-`icecast-cxx` exists to make Icecast pleasant to use from modern C++. The project provides the conveniences C++ developers expect on top of Icecast's client-facing protocols and useful Xiph components: strong value types, explicit ownership, RAII for active resources, structured errors, modular targets, predictable build integration, and platform-aware behavior.
+`icecast-cxx` exists to make Icecast pleasant to use from modern C++. It provides strong value types, explicit ownership, structured errors, modular CMake targets, platform-aware capability models, and protocol helpers without exposing Icecast server internals or forcing C APIs into application code.
 
-The library is a networking/protocol library, **not an audio engine**. It deals primarily in encoded media bytes and Icecast stream metadata. Encoding, decoding, muxing, demuxing, audio devices, and realtime PCM processing belong in the calling application or other libraries.
+The library is a networking/protocol library, **not an audio engine**. It deals in encoded media bytes and Icecast/ICY metadata. Encoding, decoding, muxing, demuxing, audio devices, and realtime PCM processing belong in the caller or other media libraries.
 
 ## Goals
 
-- Provide an idiomatic C++ interface instead of exposing Icecast server internals or raw C APIs.
-- Make common Icecast operations convenient without hiding important ownership, authentication, backpressure, or platform constraints.
+- Provide idiomatic C++ interfaces instead of exposing Icecast server-global structures or raw third-party handles.
+- Make common Icecast operations convenient without hiding ownership, authentication, backpressure, or platform constraints.
 - Keep listening, publishing, administration, and platform backends modular so consumers only link what they use.
-- Support native C++ applications and WebAssembly/browser applications without pretending browsers have normal POSIX sockets.
+- Share protocol semantics between native and WebAssembly/browser builds without pretending browsers have normal POSIX sockets.
 - Keep codec policy outside the library.
-- Keep `icecast-cxx` independent of Python while remaining straightforward to bind from the future `pycecast` project.
-- Reuse upstream Xiph code where it is technically and legally sensible, but do not blindly wrap or copy the Icecast server implementation.
-- Make dependency management friendly to both zero-configuration users and developers who manage dependencies themselves.
+- Remain independent of Python while staying straightforward to bind from the future `pycecast` project.
+- Reuse upstream Xiph components only where technically and legally sensible.
+- Cooperate with both zero-configuration CMake users and projects that manage dependencies themselves.
 
 ## Current implementation
 
-`icecast::core` is now a real compiled C++20 library. It has no third-party runtime dependency and supports normal static/shared CMake builds.
+Two CMake targets now contain real C++20 implementation:
 
-The foundational API currently includes:
-
-- HTTP/HTTPS server endpoints with optional reverse-proxy base paths;
-- Icecast mountpoint paths;
-- Basic-auth credential values and safe diagnostic redaction;
-- duplicate-preserving, case-insensitive HTTP header models;
-- project-owned structured errors and `result<T>` / `result<void>`;
-- platform, server, and effective capability models.
-
-The remaining component targets currently exist as CMake **INTERFACE placeholders** so the intended consumer-facing target graph can be exercised without pretending their protocol implementations exist yet:
-
+- `icecast::core`
 - `icecast::stream`
+
+The remaining targets are currently placeholders for later implementation:
+
 - `icecast::admin`
 - `icecast::transport_curl`
 - `icecast::publish_libshout`
 - `icecast::transport_web`
 
-Their planned responsibilities are:
+### `icecast::core`
 
-- `icecast::stream`
-  - listener semantics
-  - publisher semantics
-  - ICY metadata handling
-  - stream state and reconnection policy
-  - encoded-byte streaming contracts
-- `icecast::admin`
-  - server and mount statistics
-  - listener/source management
-  - move/disconnect operations
-  - administrative metadata operations
-  - typed coverage of common Icecast admin APIs plus an extension path for less-common endpoints
-- `icecast::transport_curl`
-  - native HTTP/HTTPS backend for listening and administrative requests
-- `icecast::publish_libshout`
-  - optional native publishing backend using libshout where appropriate
-- `icecast::transport_web`
-  - browser/WebAssembly transport using browser networking APIs
+The foundational API includes HTTP/HTTPS server endpoints with reverse-proxy base paths, Icecast mountpoints, Basic-auth credential values/redaction, duplicate-preserving case-insensitive headers, project-owned `result<T>` / structured errors, and platform/server/effective capability models.
 
-The modularity requirement is intentional: an application that only needs a subset of Icecast functionality should not be forced to build or link unrelated backends or dependencies.
+### `icecast::stream`
 
-## Core API quick start
+The transport-independent stream layer includes listener/publisher configuration, stream-level metadata, normalized stream response information, explicit `continue_stream` / `pause` / `stop` backpressure, listener reconnect policy, listener lifecycle/generation tracking, publisher lifecycle vocabulary, ICY framing demultiplexing, and raw/best-effort-parsed ICY metadata.
 
-Use the convenience umbrella header:
+No libcurl, libshout, Emscripten, codec, or audio-engine type appears in these public semantic APIs.
+
+## Core quick start
 
 ```cpp
 #include <icecast/core.hxx>
@@ -90,62 +68,98 @@ int main() {
 }
 ```
 
-This prints:
+Credentials are deliberately separate from endpoint URLs. Endpoint base paths and mountpoints are already-serialized URL path text; `core` does not guess whether caller input should be percent-encoded or decoded.
 
-```text
-https://radio.example.com/icecast/live.ogg
-```
+## Stream configuration
 
-Credentials are deliberately separate from endpoint URLs:
+The semantic stream models can be used independently of any network backend:
 
 ```cpp
-icecast::basic_credentials credentials{
-    .username = "source",
-    .password = "secret",
-};
+#include <icecast/stream.hxx>
 
-if (not icecast::validate_basic_credentials(credentials)) {
-    // Handle invalid local configuration.
+icecast::listener_config listener;
+listener.endpoint.host = "radio.example.com";
+listener.endpoint.scheme = icecast::endpoint_scheme::https;
+listener.mount.path = "/live.ogg";
+listener.request_icy_metadata = true;
+
+if (not icecast::validate_listener_config(listener)) {
+    // Handle local configuration error.
 }
 ```
 
-HTTP headers preserve duplicates and use case-insensitive lookup:
+Publisher configuration describes **already encoded/muxed bytes**. The conventional source username defaults to `source`, while callers provide the password and media content type:
 
 ```cpp
-icecast::headers response_headers;
-response_headers.append("Set-Cookie", "a=1");
-response_headers.append("set-cookie", "b=2");
+icecast::publisher_config publisher;
+publisher.endpoint.host = "radio.example.com";
+publisher.endpoint.scheme = icecast::endpoint_scheme::https;
+publisher.mount.path = "/live.ogg";
+publisher.credentials.password = "secret";
+publisher.content_type = "audio/ogg";
+publisher.metadata.name = "My Stream";
 
-auto cookies = response_headers.all("SET-COOKIE");
+if (not icecast::validate_publisher_config(publisher)) {
+    // Handle local configuration error.
+}
 ```
 
-Endpoint base paths and mountpoints are treated as already serialized URL path text. Core does not guess whether path input should be percent-encoded or decoded; callers should provide encoded path text when required.
+Publisher buffering is explicitly bounded through `max_buffered_bytes`; the default semantic limit is 256 KiB. A future backend must expose backpressure rather than silently dropping encoded bytes or growing an unbounded queue.
 
-The public value models remain ordinary `struct`s for convenient direct construction. Parsing and validation helpers are provided for textual/untrusted values and should be used at protocol boundaries.
+## ICY metadata and encoded-byte delivery
+
+When a future transport observes an `icy-metaint` response value, it can feed received response-body bytes through `icy_stream_decoder`.
+
+```cpp
+icecast::icy_stream_decoder decoder;
+icecast::reset_icy_stream_decoder(decoder, metadata_interval);
+
+auto result = icecast::consume_icy_stream(
+    decoder,
+    received_bytes,
+    [&](std::span<const std::byte> encoded_media) {
+        decoder_or_muxer.consume(encoded_media);
+        return icecast::stream_action::continue_stream;
+    },
+    [&](const icecast::icy_metadata_event_view& event) {
+        auto owned = icecast::parse_icy_metadata(event.metadata);
+        handle_metadata(owned);
+        return icecast::stream_action::continue_stream;
+    }
+);
+```
+
+Media spans borrow the caller-supplied input buffer and require no per-chunk allocation. ICY framing is removed completely before media is delivered.
+
+The protocol length byte limits a metadata block to 4080 bytes, so the decoder keeps a fixed-size metadata buffer. Metadata callback views borrow that buffer and should be copied/parsed if they need to outlive the callback/use interval.
+
+ICY field values remain raw bytes. The library deliberately does **not** guess whether historic metadata is Latin-1, UTF-8, or another encoding.
+
+`stream_consume_result.consumed` plus `stream_action` allow future transports to implement real pause/resume without losing unread network bytes.
+
+## Listener reconnection
+
+`reconnect_policy` defaults to an enabled exponential policy with a 500 ms initial delay, 30 s maximum delay, 2x multiplier, and 20% jitter allowance.
+
+Every successful physical listener connection increments `listener_status::connection_generation`, allowing applications to reset media decoders/demuxers after reconnect.
+
+Publisher auto-reconnect is intentionally **not** implemented by this semantic layer. Continuing halfway through an encoded Ogg/WebM/etc. logical stream on a fresh source connection may be invalid; a later publishing backend must coordinate interruption/new-publication behavior explicitly.
 
 ## Media boundary
 
 Listening:
 
 ```text
-Icecast
-    -> encoded stream bytes
-    -> icecast-cxx
-    -> caller's decoder/demuxer
-    -> PCM or other decoded media
+Icecast -> encoded stream bytes -> icecast-cxx -> caller decoder/demuxer -> decoded media
 ```
 
 Publishing:
 
 ```text
-PCM or other source media
-    -> caller's encoder/muxer
-    -> encoded bytes
-    -> icecast-cxx
-    -> Icecast
+caller source -> caller encoder/muxer -> encoded bytes -> icecast-cxx -> Icecast
 ```
 
-`icecast-cxx` should not become responsible for Opus, Vorbis, MP3, AAC, Ogg, WebM, audio devices, or realtime graph processing unless some narrowly scoped dependency is genuinely required to interpret Icecast protocol behavior itself.
+`icecast-cxx` should not become responsible for Opus, Vorbis, MP3, AAC, Ogg, WebM, audio devices, or realtime graph processing unless a narrowly scoped dependency is genuinely required to interpret Icecast protocol behavior itself.
 
 ## Building the project
 
@@ -157,16 +171,7 @@ The easiest developer build is:
 python build.py
 ```
 
-`build.py` is the repository gateway for full-project builds. It:
-
-1. reads the pinned dependency manifest in `dependencies.json`;
-2. prepares required dependency checkouts beneath the git-ignored `dependencies/` directory;
-3. passes those local source paths to CMake so they can be reused instead of fetched again;
-4. configures the appropriate project components;
-5. builds the project;
-6. runs CTest unless tests are disabled.
-
-The manifest is currently empty because `icecast::core` has no third-party dependency and no networking backend dependency has been wired into the build yet.
+`build.py` reads `dependencies.json`, prepares pinned dependency sources beneath the git-ignored `dependencies/` directory, passes those sources to CMake, builds selected components, and runs CTest unless tests are disabled.
 
 Useful commands include:
 
@@ -179,50 +184,30 @@ python build.py --configure-only
 python build.py --no-tests
 ```
 
-`--offline` prevents both `build.py` dependency downloads and the CMake `FetchContent` fallback.
+The dependency manifest is currently empty because the implemented `core` and `stream` layers have no third-party dependency and the network backends have not yet been wired into the build.
 
-Python is **not** required for normal downstream CMake consumption of `icecast-cxx`. It is a convenience gateway for developers building this repository itself.
+Python is **not** required for normal downstream CMake consumption.
 
 ## Dependency philosophy
 
-Dependencies are **conditional requirements**, not unconditional project requirements. A native publishing backend may require libshout, for example, while a consumer that only uses `icecast::core` should not need libshout at all.
+Dependencies are **conditional requirements**, not unconditional project requirements. A future native publishing backend may require libshout while a consumer using only `icecast::core` and `icecast::stream` should not need it.
 
-For every dependency required by an enabled component, the intended CMake resolution order is:
+For every dependency required by an enabled component, CMake should resolve it in this order:
 
-1. Reuse an already-defined compatible CMake target from the parent project.
-2. Honor an explicit dependency source/package hint supplied by the developer or by `build.py`.
-3. Reuse a compatible dependency checkout already present under `ICECAST_CXX_DEPENDENCIES_DIR`.
-4. Discover a compatible installed/system package when available.
-5. If the dependency is still missing and downloads are enabled, obtain the pinned immutable revision with CMake `FetchContent`.
-6. If fetching is disabled, fail with an actionable message explaining what dependency is missing and how to provide it.
+1. reuse an already-defined compatible target from the parent project;
+2. honor an explicit source/package hint supplied by the developer or `build.py`;
+3. reuse a compatible checkout beneath `ICECAST_CXX_DEPENDENCIES_DIR`;
+4. discover a compatible installed/system package;
+5. use the pinned immutable `FetchContent` fallback when downloads are enabled;
+6. fail with an actionable message when the dependency is required and fetching is disabled.
 
-The initial build options are:
+`ICECAST_CXX_FETCH_DEPENDENCIES` defaults to `ON`; disabling it makes configuration network-free.
 
-- `ICECAST_CXX_FETCH_DEPENDENCIES`
-  - defaults to `ON`;
-  - permits CMake to download a missing dependency after developer-provided sources/packages have been considered.
-- `ICECAST_CXX_DEPENDENCIES_DIR`
-  - defaults to `<icecast-cxx source>/dependencies`;
-  - points CMake at repository-local dependency source trees.
-- `ICECAST_CXX_BUILD_TESTS`
-  - defaults to `ON` for a top-level developer checkout and `OFF` when embedded.
-- `ICECAST_CXX_INSTALL`
-  - defaults to `ON` for a top-level developer checkout and `OFF` when embedded.
-- `ICECAST_CXX_ENABLE_STREAM`
-- `ICECAST_CXX_ENABLE_ADMIN`
-- `ICECAST_CXX_ENABLE_TRANSPORT_CURL`
-- `ICECAST_CXX_ENABLE_PUBLISH_LIBSHOUT`
-- `ICECAST_CXX_ENABLE_TRANSPORT_WEB`
-
-`core`, `stream`, and `admin` are enabled in the current top-level configuration, although only `core` contains real C++ implementation so far. Native/browser backend targets default on only for the appropriate **top-level** developer build. When `icecast-cxx` is embedded into another project, heavyweight backends default off so a core-only consumer does not unexpectedly acquire curl, libshout, or browser-specific build requirements.
-
-All automatically downloaded dependencies must be pinned to immutable revisions rather than moving branches.
+Heavyweight backend targets default off when `icecast-cxx` is embedded in another CMake project, so adding it through `FetchContent` or `add_subdirectory()` does not unexpectedly acquire curl, libshout, or browser-specific requirements.
 
 ## Consuming with CMake
 
 ### FetchContent
-
-For the currently implemented core library:
 
 ```cmake
 include(FetchContent)
@@ -235,12 +220,10 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(icecast_cxx)
 
-target_link_libraries(my_app PRIVATE icecast::core)
+target_link_libraries(my_app PRIVATE icecast::core icecast::stream)
 ```
 
-Use a released tag or immutable commit instead of a moving branch for reproducible builds.
-
-When real backends gain third-party dependencies, they remain intentionally opt-in for embedded builds through their documented `ICECAST_CXX_ENABLE_*` options.
+Use a released tag or immutable commit rather than a moving branch for reproducible builds.
 
 ### Git submodule
 
@@ -250,80 +233,49 @@ git submodule add https://github.com/mgorn/icecast-cxx.git external/icecast-cxx
 
 ```cmake
 add_subdirectory(external/icecast-cxx)
-target_link_libraries(my_app PRIVATE icecast::core)
+target_link_libraries(my_app PRIVATE icecast::core icecast::stream)
 ```
 
-### Downloaded source or ZIP
-
-A downloaded release archive works like an ordinary CMake subdirectory:
+### Downloaded source/ZIP
 
 ```cmake
 add_subdirectory(external/icecast-cxx)
-target_link_libraries(my_app PRIVATE icecast::core)
+target_link_libraries(my_app PRIVATE icecast::core icecast::stream)
 ```
 
-The project does not assume it lives at the top level of the consuming build. Development-only targets such as tests should not unexpectedly become part of a parent project's default build.
+The project does not assume it is the top-level CMake project, and developer-only tests/tools do not become part of an embedded build by default.
 
 ### Installed package
 
-The project generates CMake install/export metadata and installs the public `icecast::core` headers/library:
-
 ```cmake
 find_package(icecast-cxx CONFIG REQUIRED)
-target_link_libraries(my_app PRIVATE icecast::core)
+target_link_libraries(my_app PRIVATE icecast::core icecast::stream)
 ```
 
-As real third-party dependencies are introduced, installed-package dependency handling must use normal package/imported-target behavior and must not unexpectedly run `FetchContent` inside the downstream consumer.
-
-## Developer experience principles
-
-The C++ API should make common Icecast operations concise without hiding important semantics.
-
-Public interfaces should prefer:
-
-- strong/value types over loosely related string parameters;
-- RAII and explicit lifetime ownership;
-- structured results/errors over backend-specific integer codes;
-- spans/views for borrowed stream data where lifetime is clear;
-- bounded buffering and explicit backpressure rather than unbounded queues;
-- capability queries rather than browser/platform checks scattered through applications;
-- sensible defaults with explicit overrides;
-- public headers that do not expose libcurl, libshout, Emscripten, or other backend implementation types;
-- APIs that are pleasant for direct C++ use first while remaining straightforward to bind from Python later.
-
-The implemented core follows those rules with value-oriented models, explicit parsing/validation, backend-neutral error information, and no third-party headers in its public API.
+The project installs headers/libraries and CMake package metadata for enabled compiled components. Installed packages must not unexpectedly run `FetchContent` inside downstream projects.
 
 ## Platform direction
 
-Planned first-class platforms are:
+Planned first-class platforms are Windows, macOS, Linux, and Emscripten/WebAssembly in supported browsers.
 
-- Windows
-- macOS
-- Linux
-- Emscripten/WebAssembly in supported browsers
+Native and browser implementations will share `core`/`stream` semantics while using materially different networking mechanisms underneath. `build.py --platform web` is reserved for Emscripten builds and expects `emcmake` on `PATH`.
 
-Native and browser implementations should share public Icecast semantics and models while allowing materially different transport implementations underneath.
-
-`build.py --platform web` is reserved for Emscripten builds and expects `emcmake` on `PATH`.
-
-Browser publishing is expected to be capability-dependent because browser streaming request bodies, CORS, mixed-content policy, and HTTP protocol constraints differ from native networking. The public API should report those capabilities rather than promise unsupported behavior.
+Browser publishing remains capability-dependent because CORS, mixed-content policy, streaming request bodies, redirects, and browser HTTP behavior differ from native networking.
 
 ## Licensing
 
-The original `icecast-cxx` code is licensed under the [MIT License](LICENSE).
+Original `icecast-cxx` code is licensed under the [MIT License](LICENSE).
 
 Third-party dependencies retain their own licenses. Dependency choice and distribution strategy must be reviewed deliberately, particularly for Xiph components under GNU Library/LGPL-family terms.
 
-Do not copy GPL-licensed Icecast server implementation code into this project. The Icecast server source may be used as an authoritative behavioral reference while the client-facing C++ implementation remains independently designed.
+Do not copy GPL-licensed Icecast server implementation code into this project. The server source may be studied as an authoritative behavior reference while the client-facing C++ implementation remains independently designed.
 
 ## Other build systems
 
-CMake is the only planned first-party build system for the initial releases.
-
-Support for other build systems is welcome as future work. If you need Meson, Bazel, another build system, or additional packaging integration, please open an issue describing the use case or submit a pull request. New build-system support should preserve the same modularity and dependency-management principles as the CMake build.
+CMake is the only planned first-party build system for initial releases. If you need Meson, Bazel, another build system, or additional package-manager integration, please open an issue or submit a pull request. New build-system support should preserve target modularity and dependency-management principles.
 
 ## Contributing and coding agents
 
-Project-specific guidance for human contributors and coding agents lives in [`AGENTS.md`](AGENTS.md) and [`docs/agents/`](docs/agents/).
+Project-specific contributor/agent guidance lives in [`AGENTS.md`](AGENTS.md) and [`docs/agents/`](docs/agents/).
 
-During this early implementation phase, foundational API, dependency, licensing, threading, and transport decisions should continue to be documented and reviewed rather than introduced incidentally while implementing unrelated functionality.
+Foundational API, dependency, licensing, threading, and transport decisions should continue to be documented and reviewed rather than introduced incidentally while implementing unrelated functionality.

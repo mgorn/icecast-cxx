@@ -29,6 +29,7 @@ if(ICECAST_CXX_ENABLE_TRANSPORT_WEB AND NOT EMSCRIPTEN)
 endif()
 
 set(_icecast_cxx_export_targets)
+set(_icecast_cxx_compiled_export_targets)
 set(_icecast_cxx_interface_export_targets)
 
 add_library(
@@ -69,6 +70,47 @@ if(_icecast_cxx_core_type STREQUAL "SHARED_LIBRARY")
 endif()
 unset(_icecast_cxx_core_type)
 list(APPEND _icecast_cxx_export_targets icecast_core)
+list(APPEND _icecast_cxx_compiled_export_targets icecast_core)
+
+if(ICECAST_CXX_ENABLE_STREAM)
+    add_library(
+        icecast_stream
+        src/stream/icy.cxx
+        src/stream/models.cxx
+        src/stream/reconnect.cxx
+        src/stream/state.cxx
+    )
+    add_library(icecast::stream ALIAS icecast_stream)
+    set_target_properties(icecast_stream PROPERTIES EXPORT_NAME stream)
+    target_compile_features(icecast_stream PUBLIC cxx_std_20)
+    target_include_directories(
+        icecast_stream
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+    target_link_libraries(icecast_stream PUBLIC icecast::core)
+    target_sources(
+        icecast_stream
+        PUBLIC
+            FILE_SET HEADERS
+            BASE_DIRS include
+            FILES
+                include/icecast/stream.hxx
+                include/icecast/stream/export.hxx
+                include/icecast/stream/icy.hxx
+                include/icecast/stream/models.hxx
+                include/icecast/stream/reconnect.hxx
+                include/icecast/stream/state.hxx
+    )
+    get_target_property(_icecast_cxx_stream_type icecast_stream TYPE)
+    if(_icecast_cxx_stream_type STREQUAL "SHARED_LIBRARY")
+        target_compile_definitions(icecast_stream PRIVATE ICECAST_CXX_STREAM_BUILDING PUBLIC ICECAST_CXX_STREAM_SHARED)
+    endif()
+    unset(_icecast_cxx_stream_type)
+    list(APPEND _icecast_cxx_export_targets icecast_stream)
+    list(APPEND _icecast_cxx_compiled_export_targets icecast_stream)
+endif()
 
 macro(icecast_cxx_add_interface_component component)
     set(_target "icecast_${component}")
@@ -80,11 +122,6 @@ macro(icecast_cxx_add_interface_component component)
     list(APPEND _icecast_cxx_interface_export_targets ${_target})
     unset(_target)
 endmacro()
-
-if(ICECAST_CXX_ENABLE_STREAM)
-    icecast_cxx_add_interface_component(stream)
-    target_link_libraries(icecast_stream INTERFACE icecast::core)
-endif()
 
 if(ICECAST_CXX_ENABLE_ADMIN)
     icecast_cxx_add_interface_component(admin)
@@ -117,7 +154,7 @@ if(ICECAST_CXX_INSTALL)
     set(_icecast_cxx_package_dir "${CMAKE_INSTALL_LIBDIR}/cmake/icecast-cxx")
 
     install(
-        TARGETS icecast_core
+        TARGETS ${_icecast_cxx_compiled_export_targets}
         EXPORT icecast-cxxTargets
         FILE_SET HEADERS DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
@@ -163,4 +200,5 @@ if(ICECAST_CXX_INSTALL)
 endif()
 
 unset(_icecast_cxx_interface_export_targets)
+unset(_icecast_cxx_compiled_export_targets)
 unset(_icecast_cxx_export_targets)
