@@ -2,7 +2,7 @@
 
 A modern, modular C++ interface for interacting with Icecast servers.
 
-> **Project status:** architecture and specification phase. The public C++ API, CMake targets, dependency versions, and `build.py` workflow described below are the intended developer experience and are not implemented yet.
+> **Project status:** early implementation/scaffold phase. The CMake target skeleton, install/export plumbing, dependency manifest, and `build.py` gateway exist. The public C++ API and Icecast networking/protocol implementation are still being designed and implemented.
 
 `icecast-cxx` exists to make Icecast pleasant to use from modern C++. The project should provide the conveniences C++ developers expect on top of Icecast's client-facing protocols and useful Xiph components: strong value types, explicit ownership, RAII for active resources, structured errors, modular targets, predictable build integration, and platform-aware behavior.
 
@@ -19,9 +19,20 @@ The library is a networking/protocol library, **not an audio engine**. It deals 
 - Reuse upstream Xiph code where it is technically and legally sensible, but do not blindly wrap or copy the Icecast server implementation.
 - Make dependency management friendly to both zero-configuration users and developers who manage dependencies themselves.
 
-## Planned architecture
+## Current CMake scaffold
 
-The current design is centered around small public modules with separately linkable platform/backend components. Candidate CMake targets are:
+The following CMake targets now exist as **INTERFACE placeholders** while their corresponding C++ implementations are built out:
+
+- `icecast::core`
+- `icecast::stream`
+- `icecast::admin`
+- `icecast::transport_curl`
+- `icecast::publish_libshout`
+- `icecast::transport_web`
+
+This intentionally establishes and tests the consumer-facing build surface without pretending that networking functionality already exists.
+
+The planned responsibilities remain:
 
 - `icecast::core`
   - endpoints and mountpoints
@@ -49,7 +60,7 @@ The current design is centered around small public modules with separately linka
 - `icecast::transport_web`
   - browser/WebAssembly transport using browser networking APIs
 
-The exact target split may still be refined before the first implementation. The modularity requirement is intentional: an application that only listens should not be forced to build or link publishing or administrative dependencies.
+The modularity requirement is intentional: an application that only needs a subset of Icecast functionality should not be forced to build or link unrelated backends or dependencies.
 
 ## Media boundary
 
@@ -75,61 +86,87 @@ PCM or other source media
 
 `icecast-cxx` should not become responsible for Opus, Vorbis, MP3, AAC, Ogg, WebM, audio devices, or realtime graph processing unless some narrowly scoped dependency is genuinely required to interpret Icecast protocol behavior itself.
 
-## Build and dependency philosophy
+## Building the project
 
-CMake is the primary build system.
+CMake is the primary build system. C++20 is the current language baseline.
 
-Dependencies are **conditional requirements**, not unconditional project requirements. For example, a native publishing backend may require libshout, while a consumer that only builds `icecast::core` should not need libshout at all.
-
-For every dependency required by an enabled component, CMake should prefer dependencies already supplied by the developer and only download what is missing.
-
-The intended dependency resolution order is:
-
-1. Reuse an already-defined compatible CMake target from the parent project.
-2. Honor an explicit dependency source/package hint supplied by the developer or by `build.py`.
-3. Reuse a compatible dependency checkout already present under `dependencies/`.
-4. Discover a compatible installed/system package when available.
-5. If the dependency is still missing and its download option is enabled, download a pinned immutable revision with CMake `FetchContent`.
-6. If fetching is disabled, fail with an actionable message explaining what dependency is missing and how to provide it.
-
-Fetch options for missing dependencies should default to **ON**. Developers who want a completely network-free CMake configure must be able to explicitly disable fetching and provide all required dependencies themselves.
-
-Dependencies fetched by the project must be pinned to immutable releases or commits rather than moving branches.
-
-The project should also provide a global convenience option to disable automatic dependency downloads, while retaining per-dependency controls for advanced builds. Exact option names will be frozen when the first CMake implementation is designed.
-
-### `build.py`
-
-The repository will provide a cross-platform Python script named `build.py` as the gateway for developers who want to build the full project without manually orchestrating dependencies.
-
-The intended default workflow is:
+The easiest developer build is:
 
 ```console
 python build.py
 ```
 
-`build.py` should:
+`build.py` is the repository gateway for full-project builds. It:
 
-1. download the pinned dependency sources needed by the requested build into `dependencies/`;
-2. configure CMake so those local dependency sources are reused rather than downloaded again by `FetchContent`;
-3. configure the requested `icecast-cxx` modules/backends;
-4. build the project;
-5. provide clear diagnostics and a useful `--help` interface.
+1. reads the pinned dependency manifest in `dependencies.json`;
+2. prepares required dependency checkouts beneath the git-ignored `dependencies/` directory;
+3. passes those local source paths to CMake so they can be reused instead of fetched again;
+4. configures the appropriate project components;
+5. builds the project;
+6. runs CTest unless tests are disabled.
 
-`dependencies/` is repository-local build state and must be git-ignored.
+The manifest is currently empty because no third-party implementation dependency has been committed to the build yet.
 
-Python is **not** intended to be required for normal CMake consumption of `icecast-cxx`. It is a convenience gateway for building this repository itself.
+Useful commands include:
+
+```console
+python build.py --help
+python build.py --clean
+python build.py --configuration Release
+python build.py --offline
+python build.py --configure-only
+python build.py --no-tests
+```
+
+`--offline` prevents both `build.py` dependency downloads and the CMake `FetchContent` fallback.
+
+Python is **not** required for normal downstream CMake consumption of `icecast-cxx`. It is a convenience gateway for developers building this repository itself.
+
+## Dependency philosophy
+
+Dependencies are **conditional requirements**, not unconditional project requirements. For example, a native publishing backend may require libshout, while a consumer that only uses `icecast::core` should not need libshout at all.
+
+For every dependency required by an enabled component, the intended CMake resolution order is:
+
+1. Reuse an already-defined compatible CMake target from the parent project.
+2. Honor an explicit dependency source/package hint supplied by the developer or by `build.py`.
+3. Reuse a compatible dependency checkout already present under `ICECAST_CXX_DEPENDENCIES_DIR`.
+4. Discover a compatible installed/system package when available.
+5. If the dependency is still missing and downloads are enabled, obtain the pinned immutable revision with CMake `FetchContent`.
+6. If fetching is disabled, fail with an actionable message explaining what dependency is missing and how to provide it.
+
+The initial build options are:
+
+- `ICECAST_CXX_FETCH_DEPENDENCIES`
+  - defaults to `ON`;
+  - permits CMake to download a missing dependency after developer-provided sources/packages have been considered.
+- `ICECAST_CXX_DEPENDENCIES_DIR`
+  - defaults to `<icecast-cxx source>/dependencies`;
+  - points CMake at repository-local dependency source trees.
+- `ICECAST_CXX_BUILD_TESTS`
+  - defaults to `ON` for a top-level developer checkout and `OFF` when embedded.
+- `ICECAST_CXX_INSTALL`
+  - defaults to `ON` for a top-level developer checkout and `OFF` when embedded.
+- `ICECAST_CXX_ENABLE_STREAM`
+- `ICECAST_CXX_ENABLE_ADMIN`
+- `ICECAST_CXX_ENABLE_TRANSPORT_CURL`
+- `ICECAST_CXX_ENABLE_PUBLISH_LIBSHOUT`
+- `ICECAST_CXX_ENABLE_TRANSPORT_WEB`
+
+Semantic components (`core`, `stream`, and `admin`) are lightweight in the current scaffold. Native/browser backend targets default on only for the appropriate **top-level** developer build. When `icecast-cxx` is embedded into another project, heavyweight backends default off so a core-only consumer does not unexpectedly acquire curl, libshout, or browser-specific build requirements.
+
+All automatically downloaded dependencies must be pinned to immutable revisions rather than moving branches.
 
 ## Consuming with CMake
 
-The following examples describe the intended integration interface once the first implementation lands.
-
 ### FetchContent
-
-This should be the easiest zero-configuration integration for many CMake projects:
 
 ```cmake
 include(FetchContent)
+
+# Backends with third-party dependencies are intentionally opt-in when
+# icecast-cxx is embedded in another CMake project.
+set(ICECAST_CXX_ENABLE_TRANSPORT_CURL ON CACHE BOOL "")
 
 FetchContent_Declare(
     icecast_cxx
@@ -139,10 +176,16 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(icecast_cxx)
 
-target_link_libraries(my_app PRIVATE icecast::core icecast::stream icecast::transport_curl)
+target_link_libraries(
+    my_app
+    PRIVATE
+        icecast::core
+        icecast::stream
+        icecast::transport_curl
+)
 ```
 
-A released tag or immutable commit should be used instead of a moving branch for reproducible builds.
+Use a released tag or immutable commit instead of a moving branch for reproducible builds.
 
 ### Git submodule
 
@@ -151,31 +194,54 @@ git submodule add https://github.com/mgorn/icecast-cxx.git external/icecast-cxx
 ```
 
 ```cmake
+set(ICECAST_CXX_ENABLE_TRANSPORT_CURL ON CACHE BOOL "")
 add_subdirectory(external/icecast-cxx)
-target_link_libraries(my_app PRIVATE icecast::core icecast::stream icecast::transport_curl)
+
+target_link_libraries(
+    my_app
+    PRIVATE
+        icecast::core
+        icecast::stream
+        icecast::transport_curl
+)
 ```
 
 ### Downloaded source or ZIP
 
-A downloaded release archive should work like any normal CMake subdirectory:
+A downloaded release archive works like an ordinary CMake subdirectory:
 
 ```cmake
+set(ICECAST_CXX_ENABLE_TRANSPORT_CURL ON CACHE BOOL "")
 add_subdirectory(external/icecast-cxx)
-target_link_libraries(my_app PRIVATE icecast::core icecast::stream icecast::transport_curl)
+
+target_link_libraries(
+    my_app
+    PRIVATE
+        icecast::core
+        icecast::stream
+        icecast::transport_curl
+)
 ```
 
-The project must not assume it lives at the top level of the consuming build. Development-only targets such as tests, examples, and internal tools should not unexpectedly become part of a parent project's default build.
+The project does not assume it lives at the top level of the consuming build. Development-only targets such as tests should not unexpectedly become part of a parent project's default build.
 
 ### Installed package
 
-Install/export support is planned so packaged installations can eventually use:
+The scaffold already generates CMake install/export metadata for the components enabled when the package is built:
 
 ```cmake
 find_package(icecast-cxx CONFIG REQUIRED)
-target_link_libraries(my_app PRIVATE icecast::core icecast::stream icecast::transport_curl)
+
+target_link_libraries(
+    my_app
+    PRIVATE
+        icecast::core
+        icecast::stream
+        icecast::transport_curl
+)
 ```
 
-The installed package should export namespaced CMake targets without requiring consumers to know which third-party libraries implement them internally.
+As real third-party dependencies are introduced, installed-package dependency handling must use normal package/imported-target behavior and must not unexpectedly run `FetchContent` inside the downstream consumer.
 
 ## Developer experience principles
 
@@ -206,6 +272,8 @@ Planned first-class platforms are:
 
 Native and browser implementations should share public Icecast semantics and models while allowing materially different transport implementations underneath.
 
+`build.py --platform web` is reserved for Emscripten builds and expects `emcmake` on `PATH`.
+
 Browser publishing is expected to be capability-dependent because browser streaming request bodies, CORS, mixed-content policy, and HTTP protocol constraints differ from native networking. The public API should report those capabilities rather than promise unsupported behavior.
 
 ## Licensing
@@ -226,4 +294,4 @@ Support for other build systems is welcome as future work. If you need Meson, Ba
 
 Project-specific guidance for human contributors and coding agents lives in [`AGENTS.md`](AGENTS.md) and [`docs/agents/`](docs/agents/).
 
-During the current specification phase, implementation should not introduce foundational API, dependency, licensing, threading, or transport decisions ad hoc. Those decisions should be documented and reviewed first.
+During this early implementation phase, foundational API, dependency, licensing, threading, and transport decisions should continue to be documented and reviewed rather than introduced incidentally while implementing unrelated functionality.
