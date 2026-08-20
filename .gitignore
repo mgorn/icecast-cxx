@@ -1,0 +1,19 @@
+# Repository-local dependency checkouts
+/dependencies/
+
+# CMake build trees
+/build/
+/build-*/
+/cmake-build-*/
+
+# CMake user-local configuration
+/CMakeUserPresets.json
+/compile_commands.json
+
+# Python
+/__pycache__/
+*.py[cod]
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
