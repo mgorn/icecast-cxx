@@ -57,6 +57,7 @@ result<void> validate_listener_config(const listener_config& config) {
     constexpr std::array managed_headers{
         std::string_view{"Host"},
         std::string_view{"Authorization"},
+        std::string_view{"Accept-Encoding"},
         std::string_view{"Icy-MetaData"},
     };
     return validate_request_headers(config.request_headers, managed_headers, "validate listener configuration");

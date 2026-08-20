@@ -72,6 +72,20 @@ def require_manifest_string(dependency: dict[str, Any], key: str) -> str:
     return value
 
 
+def dependency_applies_to_platform(dependency: dict[str, Any], platform: str) -> bool:
+    platforms = dependency.get("platforms")
+    if platforms is None:
+        return True
+    if not isinstance(platforms, list) or not platforms:
+        name = dependency.get("name", "<unnamed>")
+        raise build_error(f"dependency {name!r} has an invalid platforms field")
+    for value in platforms:
+        if not isinstance(value, str) or not value:
+            name = dependency.get("name", "<unnamed>")
+            raise build_error(f"dependency {name!r} has an invalid platforms field")
+    return platform in platforms
+
+
 def git_head(directory: Path) -> str:
     return run(["git", "-C", str(directory), "rev-parse", "HEAD"], capture=True)
 
@@ -131,7 +145,7 @@ def checkout_git_dependency(dependency: dict[str, Any], dependencies_dir: Path, 
     return source_variable, destination
 
 
-def prepare_dependencies(dependencies_dir: Path, *, offline: bool) -> list[tuple[str, Path]]:
+def prepare_dependencies(dependencies_dir: Path, *, offline: bool, platform: str) -> list[tuple[str, Path]]:
     dependencies = load_dependency_manifest()
     dependencies_dir.mkdir(parents=True, exist_ok=True)
 
@@ -139,6 +153,8 @@ def prepare_dependencies(dependencies_dir: Path, *, offline: bool) -> list[tuple
     for dependency in dependencies:
         if not isinstance(dependency, dict):
             raise build_error("each dependencies.json entry must be an object")
+        if not dependency_applies_to_platform(dependency, platform):
+            continue
 
         dependency_type = dependency.get("type", "git")
         if dependency_type != "git":
@@ -266,7 +282,7 @@ def main() -> int:
             print(f"Removing {build_dir}")
             shutil.rmtree(build_dir)
 
-        cmake_sources = prepare_dependencies(dependencies_dir, offline=args.offline)
+        cmake_sources = prepare_dependencies(dependencies_dir, offline=args.offline, platform=args.platform)
         configure(args, build_dir, dependencies_dir, cmake_sources)
 
         if args.configure_only:

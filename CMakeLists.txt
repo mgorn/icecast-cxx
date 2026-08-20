@@ -12,6 +12,10 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 include(cmake/icecast-cxx-options.cmake)
 
+if(ICECAST_CXX_ENABLE_TRANSPORT_CURL AND NOT ICECAST_CXX_ENABLE_STREAM)
+    message(FATAL_ERROR "ICECAST_CXX_ENABLE_TRANSPORT_CURL requires ICECAST_CXX_ENABLE_STREAM")
+endif()
+
 if(ICECAST_CXX_ENABLE_PUBLISH_LIBSHOUT AND NOT ICECAST_CXX_ENABLE_STREAM)
     message(FATAL_ERROR "ICECAST_CXX_ENABLE_PUBLISH_LIBSHOUT requires ICECAST_CXX_ENABLE_STREAM")
 endif()
@@ -129,8 +133,47 @@ if(ICECAST_CXX_ENABLE_ADMIN)
 endif()
 
 if(ICECAST_CXX_ENABLE_TRANSPORT_CURL)
-    icecast_cxx_add_interface_component(transport_curl)
-    target_link_libraries(icecast_transport_curl INTERFACE icecast::core)
+    include(cmake/icecast-cxx-curl.cmake)
+    icecast_cxx_resolve_curl()
+
+    add_library(
+        icecast_transport_curl
+        src/transport_curl/listener.cxx
+    )
+    add_library(icecast::transport_curl ALIAS icecast_transport_curl)
+    set_target_properties(icecast_transport_curl PROPERTIES EXPORT_NAME transport_curl)
+    target_compile_features(icecast_transport_curl PUBLIC cxx_std_20)
+    target_include_directories(
+        icecast_transport_curl
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+    target_link_libraries(
+        icecast_transport_curl
+        PUBLIC
+            icecast::stream
+        PRIVATE
+            $<BUILD_INTERFACE:CURL::libcurl>
+            $<INSTALL_INTERFACE:CURL::libcurl>
+    )
+    target_sources(
+        icecast_transport_curl
+        PUBLIC
+            FILE_SET HEADERS
+            BASE_DIRS include
+            FILES
+                include/icecast/transport_curl.hxx
+                include/icecast/transport_curl/export.hxx
+                include/icecast/transport_curl/listener.hxx
+    )
+    get_target_property(_icecast_cxx_transport_curl_type icecast_transport_curl TYPE)
+    if(_icecast_cxx_transport_curl_type STREQUAL "SHARED_LIBRARY")
+        target_compile_definitions(icecast_transport_curl PRIVATE ICECAST_CXX_TRANSPORT_CURL_BUILDING PUBLIC ICECAST_CXX_TRANSPORT_CURL_SHARED)
+    endif()
+    unset(_icecast_cxx_transport_curl_type)
+    list(APPEND _icecast_cxx_export_targets icecast_transport_curl)
+    list(APPEND _icecast_cxx_compiled_export_targets icecast_transport_curl)
 endif()
 
 if(ICECAST_CXX_ENABLE_PUBLISH_LIBSHOUT)
@@ -148,6 +191,11 @@ if(ICECAST_CXX_BUILD_TESTS)
     if(BUILD_TESTING)
         add_subdirectory(tests)
     endif()
+endif()
+
+set(ICECAST_CXX_CONFIG_HAS_TRANSPORT_CURL OFF)
+if(ICECAST_CXX_ENABLE_TRANSPORT_CURL)
+    set(ICECAST_CXX_CONFIG_HAS_TRANSPORT_CURL ON)
 endif()
 
 if(ICECAST_CXX_INSTALL)

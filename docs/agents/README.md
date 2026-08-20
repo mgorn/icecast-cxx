@@ -1,13 +1,12 @@
 # Agent documentation
 
-This directory contains focused project guidance for coding agents and contributors working on `icecast-cxx`.
+Focused guidance for contributors and coding agents:
 
-- [`architecture.md`](architecture.md) — architectural boundaries, responsibilities, and protocol/media separation.
-- [`core-api.md`](core-api.md) — implemented foundational C++ models, validation rules, results/errors, and capabilities.
-- [`stream-api.md`](stream-api.md) — implemented transport-independent stream models, listener state/reconnect behavior, backpressure, and ICY demultiplexing.
-- [`build-system.md`](build-system.md) — CMake integration, dependency discovery/fetching, `build.py`, packaging, and embedding requirements.
-- [`cpp-style.md`](cpp-style.md) — C++ source style and public-API design conventions.
+- [`architecture.md`](architecture.md) — project/module boundaries and long-lived architectural invariants.
+- [`core-api.md`](core-api.md) — foundational endpoint, credential, header, result/error, and capability models.
+- [`stream-api.md`](stream-api.md) — listener/publisher semantic models, reconnect/state, backpressure, and ICY framing.
+- [`transport-curl.md`](transport-curl.md) — implemented native listener transport and libcurl-specific invariants.
+- [`build-system.md`](build-system.md) — CMake integration, dependency resolution, `dependencies.json`, `build.py`, installation, and embedding.
+- [`cpp-style.md`](cpp-style.md) — C++ source/API conventions.
 
-The root [`AGENTS.md`](../../AGENTS.md) is the entry point and defines when these documents apply.
-
-Specification-oriented sections still describe future administration and transport/publishing backends. `core-api.md`, `stream-api.md`, and implemented portions of the build-system documentation describe code that exists and must stay synchronized with behavior.
+The root [`AGENTS.md`](../../AGENTS.md) is the entry point. Implemented behavior in these files is a compatibility surface; future-looking sections are design constraints, not permission to invent unrelated implementation.

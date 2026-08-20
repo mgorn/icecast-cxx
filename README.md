@@ -2,48 +2,104 @@
 
 A modern, modular C++ interface for interacting with Icecast servers.
 
-> **Project status:** early implementation phase. `icecast::core` and the transport-independent portions of `icecast::stream` are implemented. Administrative functionality, native/browser networking, and source-publishing backends are still under development; the project does not yet provide a complete network-connected Icecast client.
+> **Project status:** early implementation. `icecast::core`, the transport-independent portions of `icecast::stream`, and the native libcurl listener backend are implemented. Administration, native source publishing, and browser transport remain under development.
 
-`icecast-cxx` exists to make Icecast pleasant to use from modern C++. It provides strong value types, explicit ownership, structured errors, modular CMake targets, platform-aware capability models, and protocol helpers without exposing Icecast server internals or forcing C APIs into application code.
+`icecast-cxx` is designed around developer convenience without hiding important networking semantics. Public APIs use C++ value types, RAII, structured errors, explicit backpressure, and modular CMake targets rather than exposing Icecast server internals or third-party C handles.
 
-The library is a networking/protocol library, **not an audio engine**. It deals in encoded media bytes and Icecast/ICY metadata. Encoding, decoding, muxing, demuxing, audio devices, and realtime PCM processing belong in the caller or other media libraries.
+The library deals in **encoded media bytes** and Icecast/ICY protocol metadata. Encoding, decoding, muxing, demuxing, PCM processing, audio devices, and codec-specific pacing belong to the caller or other media libraries.
 
-## Goals
-
-- Provide idiomatic C++ interfaces instead of exposing Icecast server-global structures or raw third-party handles.
-- Make common Icecast operations convenient without hiding ownership, authentication, backpressure, or platform constraints.
-- Keep listening, publishing, administration, and platform backends modular so consumers only link what they use.
-- Share protocol semantics between native and WebAssembly/browser builds without pretending browsers have normal POSIX sockets.
-- Keep codec policy outside the library.
-- Remain independent of Python while staying straightforward to bind from the future `pycecast` project.
-- Reuse upstream Xiph components only where technically and legally sensible.
-- Cooperate with both zero-configuration CMake users and projects that manage dependencies themselves.
-
-## Current implementation
-
-Two CMake targets now contain real C++20 implementation:
+## Implemented targets
 
 - `icecast::core`
+  - HTTP/HTTPS server endpoints and mountpoints
+  - credentials and redacted diagnostics
+  - duplicate-preserving HTTP headers
+  - structured `error` and `result<T>`
+  - platform/server/effective capability models
 - `icecast::stream`
+  - listener and publisher configuration models
+  - listener/publisher lifecycle vocabulary
+  - listener reconnect policy and connection generations
+  - explicit `continue_stream` / `pause` / `stop` backpressure
+  - allocation-free media delivery through the ICY demultiplexer
+  - raw and best-effort-parsed ICY metadata
+- `icecast::transport_curl`
+  - native HTTP/HTTPS listener transport using libcurl
+  - Basic authentication
+  - redirects with HTTPS downgrade protection
+  - TLS peer and hostname verification enabled
+  - response header normalization
+  - ICY metadata integration
+  - pause/resume/stop without unbounded buffering
+  - listener reconnect handling
+  - caller-driven polling with no hidden worker thread
 
-The remaining targets are currently placeholders for later implementation:
+The following targets currently remain placeholders:
 
 - `icecast::admin`
-- `icecast::transport_curl`
 - `icecast::publish_libshout`
 - `icecast::transport_web`
 
-### `icecast::core`
+## Native listener quick start
 
-The foundational API includes HTTP/HTTPS server endpoints with reverse-proxy base paths, Icecast mountpoints, Basic-auth credential values/redaction, duplicate-preserving case-insensitive headers, project-owned `result<T>` / structured errors, and platform/server/effective capability models.
+```cpp
+#include <icecast/transport_curl.hxx>
 
-### `icecast::stream`
+#include <chrono>
+#include <cstddef>
+#include <iostream>
+#include <span>
 
-The transport-independent stream layer includes listener/publisher configuration, stream-level metadata, normalized stream response information, explicit `continue_stream` / `pause` / `stop` backpressure, listener reconnect policy, listener lifecycle/generation tracking, publisher lifecycle vocabulary, ICY framing demultiplexing, and raw/best-effort-parsed ICY metadata.
+int main() {
+    auto context_result = icecast::curl_context::create();
+    if (not context_result) {
+        std::cerr << context_result.error().message << '\n';
+        return 1;
+    }
+    auto context = std::move(context_result).value();
 
-No libcurl, libshout, Emscripten, codec, or audio-engine type appears in these public semantic APIs.
+    icecast::listener_config config;
+    config.endpoint.scheme = icecast::endpoint_scheme::https;
+    config.endpoint.host = "radio.example.com";
+    config.mount.path = "/live.ogg";
 
-## Core quick start
+    icecast::curl_listener_callbacks callbacks;
+    callbacks.on_media = [](std::span<const std::byte> encoded_bytes) {
+        // Feed encoded_bytes to your decoder/demuxer here.
+        return icecast::stream_action::continue_stream;
+    };
+    callbacks.on_metadata = [](const icecast::icy_metadata_event_view& metadata) {
+        // metadata.metadata.payload is borrowed for this callback only.
+        return icecast::stream_action::continue_stream;
+    };
+    callbacks.on_error = [](const icecast::error& error) {
+        std::cerr << error.message << '\n';
+    };
+
+    auto listener_result = context.listen(std::move(config), std::move(callbacks));
+    if (not listener_result) {
+        std::cerr << listener_result.error().message << '\n';
+        return 1;
+    }
+    auto listener = std::move(listener_result).value();
+
+    using namespace std::chrono_literals;
+    while (not listener.finished()) {
+        if (auto result = context.poll(100ms); not result) {
+            std::cerr << result.error().message << '\n';
+            return 1;
+        }
+    }
+}
+```
+
+`curl_context::poll()` drives network progress. There is no hidden thread, and listener callbacks execute on the thread that calls `poll()`.
+
+A media or metadata callback can return `icecast::stream_action::pause`. Call `listener.resume()` when the consumer is ready and continue polling. The curl adapter keeps at most one bounded libcurl receive tail while paused; it does not create an unbounded application queue.
+
+Each successful connection increments `listener_status::connection_generation`, including successful reconnects. Callers can use that generation to reset a decoder when a new physical stream connection begins.
+
+## Core URL example
 
 ```cpp
 #include <icecast/core.hxx>
@@ -58,120 +114,46 @@ int main() {
         return 1;
     }
 
-    auto stream_url = icecast::resolve_mount_url(endpoint.value(), mount.value());
-    if (not stream_url) {
-        std::cerr << stream_url.error().message << '\n';
+    auto url = icecast::resolve_mount_url(endpoint.value(), mount.value());
+    if (not url) {
         return 1;
     }
 
-    std::cout << stream_url.value() << '\n';
+    std::cout << url.value() << '\n';
 }
 ```
 
-Credentials are deliberately separate from endpoint URLs. Endpoint base paths and mountpoints are already-serialized URL path text; `core` does not guess whether caller input should be percent-encoded or decoded.
+This prints `https://radio.example.com/icecast/live.ogg`.
 
-## Stream configuration
-
-The semantic stream models can be used independently of any network backend:
-
-```cpp
-#include <icecast/stream.hxx>
-
-icecast::listener_config listener;
-listener.endpoint.host = "radio.example.com";
-listener.endpoint.scheme = icecast::endpoint_scheme::https;
-listener.mount.path = "/live.ogg";
-listener.request_icy_metadata = true;
-
-if (not icecast::validate_listener_config(listener)) {
-    // Handle local configuration error.
-}
-```
-
-Publisher configuration describes **already encoded/muxed bytes**. The conventional source username defaults to `source`, while callers provide the password and media content type:
-
-```cpp
-icecast::publisher_config publisher;
-publisher.endpoint.host = "radio.example.com";
-publisher.endpoint.scheme = icecast::endpoint_scheme::https;
-publisher.mount.path = "/live.ogg";
-publisher.credentials.password = "secret";
-publisher.content_type = "audio/ogg";
-publisher.metadata.name = "My Stream";
-
-if (not icecast::validate_publisher_config(publisher)) {
-    // Handle local configuration error.
-}
-```
-
-Publisher buffering is explicitly bounded through `max_buffered_bytes`; the default semantic limit is 256 KiB. A future backend must expose backpressure rather than silently dropping encoded bytes or growing an unbounded queue.
-
-## ICY metadata and encoded-byte delivery
-
-When a future transport observes an `icy-metaint` response value, it can feed received response-body bytes through `icy_stream_decoder`.
-
-```cpp
-icecast::icy_stream_decoder decoder;
-icecast::reset_icy_stream_decoder(decoder, metadata_interval);
-
-auto result = icecast::consume_icy_stream(
-    decoder,
-    received_bytes,
-    [&](std::span<const std::byte> encoded_media) {
-        decoder_or_muxer.consume(encoded_media);
-        return icecast::stream_action::continue_stream;
-    },
-    [&](const icecast::icy_metadata_event_view& event) {
-        auto owned = icecast::parse_icy_metadata(event.metadata);
-        handle_metadata(owned);
-        return icecast::stream_action::continue_stream;
-    }
-);
-```
-
-Media spans borrow the caller-supplied input buffer and require no per-chunk allocation. ICY framing is removed completely before media is delivered.
-
-The protocol length byte limits a metadata block to 4080 bytes, so the decoder keeps a fixed-size metadata buffer. Metadata callback views borrow that buffer and should be copied/parsed if they need to outlive the callback/use interval.
-
-ICY field values remain raw bytes. The library deliberately does **not** guess whether historic metadata is Latin-1, UTF-8, or another encoding.
-
-`stream_consume_result.consumed` plus `stream_action` allow future transports to implement real pause/resume without losing unread network bytes.
-
-## Listener reconnection
-
-`reconnect_policy` defaults to an enabled exponential policy with a 500 ms initial delay, 30 s maximum delay, 2x multiplier, and 20% jitter allowance.
-
-Every successful physical listener connection increments `listener_status::connection_generation`, allowing applications to reset media decoders/demuxers after reconnect.
-
-Publisher auto-reconnect is intentionally **not** implemented by this semantic layer. Continuing halfway through an encoded Ogg/WebM/etc. logical stream on a fresh source connection may be invalid; a later publishing backend must coordinate interruption/new-publication behavior explicitly.
+Credentials are intentionally separate from endpoint URLs. Endpoint base paths and mountpoints are already-serialized URL path text; the library does not guess whether caller input should be percent-encoded or decoded.
 
 ## Media boundary
 
 Listening:
 
 ```text
-Icecast -> encoded stream bytes -> icecast-cxx -> caller decoder/demuxer -> decoded media
+Icecast -> encoded bytes -> icecast-cxx -> caller decoder/demuxer -> decoded media
 ```
 
 Publishing:
 
 ```text
-caller source -> caller encoder/muxer -> encoded bytes -> icecast-cxx -> Icecast
+caller media -> caller encoder/muxer -> encoded bytes -> icecast-cxx -> Icecast
 ```
 
-`icecast-cxx` should not become responsible for Opus, Vorbis, MP3, AAC, Ogg, WebM, audio devices, or realtime graph processing unless a narrowly scoped dependency is genuinely required to interpret Icecast protocol behavior itself.
+Container-native metadata stays in the encoded stream. ICY metadata framing is an Icecast protocol concern and is separated by `icecast::stream` when present.
 
 ## Building the project
 
-CMake is the primary build system. C++20 is the current language baseline.
+CMake 3.24+ is the primary build system and C++20 is the language baseline.
 
-The easiest developer build is:
+The repository developer gateway is:
 
 ```console
 python build.py
 ```
 
-`build.py` reads `dependencies.json`, prepares pinned dependency sources beneath the git-ignored `dependencies/` directory, passes those sources to CMake, builds selected components, and runs CTest unless tests are disabled.
+For a native build, `build.py` prepares the pinned libcurl source under the git-ignored `dependencies/` directory, then passes that source path to CMake. CMake reuses it rather than fetching a second copy.
 
 Useful commands include:
 
@@ -184,26 +166,30 @@ python build.py --configure-only
 python build.py --no-tests
 ```
 
-The dependency manifest is currently empty because the implemented `core` and `stream` layers have no third-party dependency and the network backends have not yet been wired into the build.
+Python is **not** required to consume `icecast-cxx` from another CMake project.
 
-Python is **not** required for normal downstream CMake consumption.
+### Dependency resolution
 
-## Dependency philosophy
+Dependencies are conditional on the enabled component. `core` and `stream` do not require libcurl; `transport_curl` does.
 
-Dependencies are **conditional requirements**, not unconditional project requirements. A future native publishing backend may require libshout while a consumer using only `icecast::core` and `icecast::stream` should not need it.
+For libcurl, CMake resolves dependencies in this order:
 
-For every dependency required by an enabled component, CMake should resolve it in this order:
+1. an already-defined compatible `CURL::libcurl` target;
+2. `ICECAST_CXX_CURL_SOURCE_DIR`;
+3. the curl checkout under `ICECAST_CXX_DEPENDENCIES_DIR`;
+4. an installed CMake config package;
+5. pkg-config on supported Unix-like systems;
+6. CMake's normal `FindCURL` package discovery;
+7. pinned `FetchContent`, when permitted;
+8. an actionable configuration error if fetching is disabled.
 
-1. reuse an already-defined compatible target from the parent project;
-2. honor an explicit source/package hint supplied by the developer or `build.py`;
-3. reuse a compatible checkout beneath `ICECAST_CXX_DEPENDENCIES_DIR`;
-4. discover a compatible installed/system package;
-5. use the pinned immutable `FetchContent` fallback when downloads are enabled;
-6. fail with an actionable message when the dependency is required and fetching is disabled.
+`ICECAST_CXX_FETCH_DEPENDENCIES` and `ICECAST_CXX_FETCH_CURL` both default to `ON`. Set either to `OFF` when automatic curl downloads are not desired.
 
-`ICECAST_CXX_FETCH_DEPENDENCIES` defaults to `ON`; disabling it makes configuration network-free.
+The authoritative curl repository/revision is stored once in `dependencies.json`; both `build.py` and CMake's FetchContent fallback read that manifest.
 
-Heavyweight backend targets default off when `icecast-cxx` is embedded in another CMake project, so adding it through `FetchContent` or `add_subdirectory()` does not unexpectedly acquire curl, libshout, or browser-specific requirements.
+The currently pinned source is curl 8.21.0 at commit `9187ef7ec8a8d5650adb8ca6b89a5800e94fba26`.
+
+When icecast-cxx builds its own curl source, it builds a small HTTP-only libcurl configuration. Windows uses Schannel. Non-Windows source builds currently use OpenSSL as curl's TLS provider, so the corresponding development package/toolchain support must be available. This transitive TLS-provider provisioning can be improved separately without changing the public `icecast::transport_curl` API.
 
 ## Consuming with CMake
 
@@ -211,6 +197,8 @@ Heavyweight backend targets default off when `icecast-cxx` is embedded in anothe
 
 ```cmake
 include(FetchContent)
+
+set(ICECAST_CXX_ENABLE_TRANSPORT_CURL ON CACHE BOOL "")
 
 FetchContent_Declare(
     icecast_cxx
@@ -220,10 +208,10 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(icecast_cxx)
 
-target_link_libraries(my_app PRIVATE icecast::core icecast::stream)
+target_link_libraries(my_app PRIVATE icecast::transport_curl)
 ```
 
-Use a released tag or immutable commit rather than a moving branch for reproducible builds.
+Heavyweight backend targets default off when `icecast-cxx` is embedded, so explicitly enable the backend your parent project needs.
 
 ### Git submodule
 
@@ -232,50 +220,82 @@ git submodule add https://github.com/mgorn/icecast-cxx.git external/icecast-cxx
 ```
 
 ```cmake
+set(ICECAST_CXX_ENABLE_TRANSPORT_CURL ON CACHE BOOL "")
 add_subdirectory(external/icecast-cxx)
-target_link_libraries(my_app PRIVATE icecast::core icecast::stream)
+target_link_libraries(my_app PRIVATE icecast::transport_curl)
 ```
 
 ### Downloaded source/ZIP
 
 ```cmake
+set(ICECAST_CXX_ENABLE_TRANSPORT_CURL ON CACHE BOOL "")
 add_subdirectory(external/icecast-cxx)
-target_link_libraries(my_app PRIVATE icecast::core icecast::stream)
+target_link_libraries(my_app PRIVATE icecast::transport_curl)
 ```
 
-The project does not assume it is the top-level CMake project, and developer-only tests/tools do not become part of an embedded build by default.
+The source tree does not require Git metadata merely to configure.
 
 ### Installed package
 
 ```cmake
 find_package(icecast-cxx CONFIG REQUIRED)
-target_link_libraries(my_app PRIVATE icecast::core icecast::stream)
+target_link_libraries(my_app PRIVATE icecast::transport_curl)
 ```
 
-The project installs headers/libraries and CMake package metadata for enabled compiled components. Installed packages must not unexpectedly run `FetchContent` inside downstream projects.
+Installed packages never run FetchContent in downstream projects. If the installed package includes `transport_curl`, its package config resolves an installed libcurl dependency.
 
-## Platform direction
+## Build options
 
-Planned first-class platforms are Windows, macOS, Linux, and Emscripten/WebAssembly in supported browsers.
+Important cache variables currently include:
 
-Native and browser implementations will share `core`/`stream` semantics while using materially different networking mechanisms underneath. `build.py --platform web` is reserved for Emscripten builds and expects `emcmake` on `PATH`.
+- `ICECAST_CXX_BUILD_TESTS`
+- `ICECAST_CXX_INSTALL`
+- `ICECAST_CXX_FETCH_DEPENDENCIES`
+- `ICECAST_CXX_FETCH_CURL`
+- `ICECAST_CXX_DEPENDENCIES_DIR`
+- `ICECAST_CXX_CURL_SOURCE_DIR`
+- `ICECAST_CXX_ENABLE_STREAM`
+- `ICECAST_CXX_ENABLE_ADMIN`
+- `ICECAST_CXX_ENABLE_TRANSPORT_CURL`
+- `ICECAST_CXX_ENABLE_PUBLISH_LIBSHOUT`
+- `ICECAST_CXX_ENABLE_TRANSPORT_WEB`
 
-Browser publishing remains capability-dependent because CORS, mixed-content policy, streaming request bodies, redirects, and browser HTTP behavior differ from native networking.
+Top-level native builds enable the native backend targets by default. Embedded builds leave heavyweight backends off unless the parent opts in. Tests and install rules also default on only for top-level builds.
+
+## Security behavior
+
+The native listener backend intentionally keeps conservative defaults:
+
+- TLS peer certificate verification is enabled;
+- TLS hostname verification is enabled;
+- an HTTPS listener cannot redirect down to HTTP;
+- credentials are not embedded in URLs;
+- credentials are not forwarded to unrelated redirect hosts by enabling unrestricted auth;
+- transport protocols are restricted to HTTP/HTTPS;
+- `Accept-Encoding: identity` is managed so servers are asked not to add HTTP content coding around encoded media bytes.
+
+Basic authentication is the current V1 authentication mechanism.
+
+## Platforms
+
+Planned first-class platforms are Windows, macOS, Linux, and Emscripten/WebAssembly.
+
+`icecast::transport_curl` is native-only. Browser networking will use a separate Fetch-based backend rather than POSIX socket emulation.
 
 ## Licensing
 
 Original `icecast-cxx` code is licensed under the [MIT License](LICENSE).
 
-Third-party dependencies retain their own licenses. Dependency choice and distribution strategy must be reviewed deliberately, particularly for Xiph components under GNU Library/LGPL-family terms.
+Third-party dependencies retain their own licenses. libcurl uses the curl license and remains an implementation dependency of the native transport target.
 
-Do not copy GPL-licensed Icecast server implementation code into this project. The server source may be studied as an authoritative behavior reference while the client-facing C++ implementation remains independently designed.
+Do not copy GPL-licensed Icecast server implementation code into this project. The server source may be studied as a behavioral reference while client-facing code is independently implemented.
 
 ## Other build systems
 
-CMake is the only planned first-party build system for initial releases. If you need Meson, Bazel, another build system, or additional package-manager integration, please open an issue or submit a pull request. New build-system support should preserve target modularity and dependency-management principles.
+CMake is the only first-party build system currently planned.
 
-## Contributing and coding agents
+If you need Meson, Bazel, another build system, or additional package-manager integration, please open an issue or submit a pull request. New build-system support should preserve the same target boundaries and optional-dependency behavior.
 
-Project-specific contributor/agent guidance lives in [`AGENTS.md`](AGENTS.md) and [`docs/agents/`](docs/agents/).
+## Contributors and coding agents
 
-Foundational API, dependency, licensing, threading, and transport decisions should continue to be documented and reviewed rather than introduced incidentally while implementing unrelated functionality.
+Project guidance lives in [`AGENTS.md`](AGENTS.md) and [`docs/agents/`](docs/agents/). Keep those documents synchronized with externally visible API and build behavior.

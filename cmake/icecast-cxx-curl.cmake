@@ -1,0 +1,150 @@
+include_guard(GLOBAL)
+
+include(FetchContent)
+
+set(ICECAST_CXX_CURL_MINIMUM_VERSION "7.66.0")
+set(_ICECAST_CXX_DEPENDENCY_MANIFEST "${CMAKE_CURRENT_LIST_DIR}/../dependencies.json")
+
+function(_icecast_cxx_read_curl_manifest)
+    if(NOT EXISTS "${_ICECAST_CXX_DEPENDENCY_MANIFEST}")
+        message(FATAL_ERROR "Missing icecast-cxx dependency manifest: ${_ICECAST_CXX_DEPENDENCY_MANIFEST}")
+    endif()
+
+    file(READ "${_ICECAST_CXX_DEPENDENCY_MANIFEST}" _manifest)
+    string(JSON _schema ERROR_VARIABLE _schema_error GET "${_manifest}" schema_version)
+    if(_schema_error OR NOT _schema EQUAL 1)
+        message(FATAL_ERROR "Unsupported or invalid icecast-cxx dependencies.json schema")
+    endif()
+
+    string(JSON _count ERROR_VARIABLE _count_error LENGTH "${_manifest}" dependencies)
+    if(_count_error OR _count EQUAL 0)
+        message(FATAL_ERROR "icecast-cxx dependencies.json does not contain the curl dependency")
+    endif()
+
+    math(EXPR _last "${_count} - 1")
+    foreach(_index RANGE 0 ${_last})
+        string(JSON _name GET "${_manifest}" dependencies ${_index} name)
+        if(_name STREQUAL "curl")
+            string(JSON _repository GET "${_manifest}" dependencies ${_index} repository)
+            string(JSON _revision GET "${_manifest}" dependencies ${_index} revision)
+            string(JSON _directory GET "${_manifest}" dependencies ${_index} directory)
+            set(ICECAST_CXX_CURL_REPOSITORY "${_repository}" PARENT_SCOPE)
+            set(ICECAST_CXX_CURL_REVISION "${_revision}" PARENT_SCOPE)
+            set(ICECAST_CXX_CURL_DIRECTORY "${_directory}" PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+
+    message(FATAL_ERROR "icecast-cxx dependencies.json does not contain the curl dependency")
+endfunction()
+
+function(_icecast_cxx_make_curl_available source_dir repository revision)
+    set(BUILD_CURL_EXE OFF)
+    set(BUILD_EXAMPLES OFF)
+    set(BUILD_LIBCURL_DOCS OFF)
+    set(BUILD_MISC_DOCS OFF)
+    set(BUILD_TESTING OFF)
+    set(CURL_BUILD_EVERYTHING OFF)
+    set(CURL_DISABLE_INSTALL ON)
+    set(HTTP_ONLY ON)
+    set(CURL_USE_LIBPSL OFF)
+    set(CURL_USE_LIBSSH2 OFF)
+    set(CURL_USE_LIBSSH OFF)
+    set(CURL_USE_GSSAPI OFF)
+    set(CURL_USE_GSASL OFF)
+    set(USE_LIBIDN2 OFF)
+    set(USE_NGHTTP2 OFF)
+    set(USE_NGTCP2 OFF)
+    set(USE_QUICHE OFF)
+    set(ENABLE_ARES OFF)
+    set(CURL_BROTLI OFF)
+    set(CURL_ZSTD OFF)
+    set(CURL_ZLIB OFF)
+    set(CURL_ENABLE_SSL ON)
+
+    if(WIN32)
+        set(CURL_USE_SCHANNEL ON)
+        set(CURL_USE_OPENSSL OFF)
+    else()
+        set(CURL_USE_SCHANNEL OFF)
+        set(CURL_USE_OPENSSL ON)
+    endif()
+
+    if(BUILD_SHARED_LIBS)
+        set(BUILD_SHARED_LIBS ON)
+        set(BUILD_STATIC_LIBS OFF)
+    else()
+        set(BUILD_SHARED_LIBS OFF)
+        set(BUILD_STATIC_LIBS ON)
+    endif()
+
+    if(source_dir)
+        FetchContent_Declare(icecast_cxx_curl SOURCE_DIR "${source_dir}")
+    else()
+        FetchContent_Declare(
+            icecast_cxx_curl
+            GIT_REPOSITORY "${repository}"
+            GIT_TAG "${revision}"
+        )
+    endif()
+    FetchContent_MakeAvailable(icecast_cxx_curl)
+
+    if(NOT TARGET CURL::libcurl)
+        message(FATAL_ERROR "The icecast-cxx libcurl source build did not provide CURL::libcurl")
+    endif()
+endfunction()
+
+function(icecast_cxx_resolve_curl)
+    if(TARGET CURL::libcurl)
+        return()
+    endif()
+
+    _icecast_cxx_read_curl_manifest()
+
+    set(_source_dir "")
+    if(ICECAST_CXX_CURL_SOURCE_DIR)
+        set(_source_dir "${ICECAST_CXX_CURL_SOURCE_DIR}")
+    elseif(EXISTS "${ICECAST_CXX_DEPENDENCIES_DIR}/${ICECAST_CXX_CURL_DIRECTORY}/CMakeLists.txt")
+        set(_source_dir "${ICECAST_CXX_DEPENDENCIES_DIR}/${ICECAST_CXX_CURL_DIRECTORY}")
+    endif()
+
+    if(_source_dir)
+        if(NOT EXISTS "${_source_dir}/CMakeLists.txt")
+            message(FATAL_ERROR "ICECAST_CXX_CURL_SOURCE_DIR does not contain a libcurl CMake project: ${_source_dir}")
+        endif()
+        _icecast_cxx_make_curl_available("${_source_dir}" "${ICECAST_CXX_CURL_REPOSITORY}" "${ICECAST_CXX_CURL_REVISION}")
+        return()
+    endif()
+
+    find_package(CURL ${ICECAST_CXX_CURL_MINIMUM_VERSION} CONFIG QUIET)
+    if(TARGET CURL::libcurl)
+        return()
+    endif()
+
+    if(NOT WIN32)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(ICECAST_CXX_SYSTEM_CURL QUIET IMPORTED_TARGET GLOBAL "libcurl>=${ICECAST_CXX_CURL_MINIMUM_VERSION}")
+            if(TARGET PkgConfig::ICECAST_CXX_SYSTEM_CURL)
+                add_library(CURL::libcurl INTERFACE IMPORTED GLOBAL)
+                set_property(TARGET CURL::libcurl PROPERTY INTERFACE_LINK_LIBRARIES PkgConfig::ICECAST_CXX_SYSTEM_CURL)
+                return()
+            endif()
+        endif()
+    endif()
+
+    find_package(CURL ${ICECAST_CXX_CURL_MINIMUM_VERSION} QUIET)
+    if(TARGET CURL::libcurl)
+        return()
+    endif()
+
+    if((NOT ICECAST_CXX_FETCH_DEPENDENCIES) OR (NOT ICECAST_CXX_FETCH_CURL))
+        message(FATAL_ERROR
+            "icecast::transport_curl requires libcurl >= ${ICECAST_CXX_CURL_MINIMUM_VERSION}. "
+            "Provide CURL::libcurl, set ICECAST_CXX_CURL_SOURCE_DIR, place curl under "
+            "ICECAST_CXX_DEPENDENCIES_DIR, or enable ICECAST_CXX_FETCH_DEPENDENCIES and ICECAST_CXX_FETCH_CURL."
+        )
+    endif()
+
+    _icecast_cxx_make_curl_available("" "${ICECAST_CXX_CURL_REPOSITORY}" "${ICECAST_CXX_CURL_REVISION}")
+endfunction()

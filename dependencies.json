@@ -1,4 +1,14 @@
 {
   "schema_version": 1,
-  "dependencies": []
+  "dependencies": [
+    {
+      "name": "curl",
+      "type": "git",
+      "repository": "https://github.com/curl/curl.git",
+      "revision": "9187ef7ec8a8d5650adb8ca6b89a5800e94fba26",
+      "directory": "curl",
+      "cmake_source_variable": "ICECAST_CXX_CURL_SOURCE_DIR",
+      "platforms": ["native"]
+    }
+  ]
 }
