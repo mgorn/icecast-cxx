@@ -2,135 +2,191 @@
 
 CMake is the primary first-party build system for `icecast-cxx`.
 
-The build should optimize for two equally important cases:
+The build must optimize for two equally important cases:
 
-1. a user who wants the project to configure with minimal effort and is happy for missing dependencies to be downloaded automatically;
-2. a user or parent project that manages dependencies itself and does not want `icecast-cxx` to fight that setup.
+1. a developer building the repository directly who wants the full applicable project with minimal setup;
+2. a downstream/parent project that manages dependencies itself and does not want `icecast-cxx` to pull in unrelated backends or fight its dependency setup.
+
+## Current scaffold
+
+The repository now contains a working initial build scaffold:
+
+- root `CMakeLists.txt`;
+- `cmake/icecast-cxx-options.cmake`;
+- install/export package generation;
+- namespaced INTERFACE target placeholders;
+- `dependencies.json` as the dependency-pin manifest;
+- `build.py` as the repository build gateway;
+- `tests/CMakeLists.txt` with initial CTest plumbing;
+- git-ignored repository-local `dependencies/` state.
+
+The component targets are currently INTERFACE placeholders. Preserve their consumer-facing names while replacing them with real compiled targets as implementation is introduced.
+
+## Current CMake options
+
+These cache variables are now part of the implemented build surface and should not be renamed casually:
+
+- `ICECAST_CXX_BUILD_TESTS`
+- `ICECAST_CXX_INSTALL`
+- `ICECAST_CXX_FETCH_DEPENDENCIES`
+- `ICECAST_CXX_DEPENDENCIES_DIR`
+- `ICECAST_CXX_ENABLE_STREAM`
+- `ICECAST_CXX_ENABLE_ADMIN`
+- `ICECAST_CXX_ENABLE_TRANSPORT_CURL`
+- `ICECAST_CXX_ENABLE_PUBLISH_LIBSHOUT`
+- `ICECAST_CXX_ENABLE_TRANSPORT_WEB`
+
+`core` is always present. `stream` and `admin` default on. Backend defaults depend on context:
+
+- top-level native build: curl and libshout backend targets default on;
+- top-level Emscripten build: web transport defaults on;
+- embedded/subdirectory/FetchContent build: heavyweight backend targets default off;
+- tests and install rules default on only for a top-level build.
+
+This distinction is deliberate. A parent project using only `icecast::core` must not acquire curl/libshout simply because `icecast-cxx` was added as a subdirectory.
 
 ## Core rule: dependencies are conditional
 
 A third-party library may be required by an enabled backend without being required by `icecast-cxx` as a whole.
 
-Examples of the intended shape:
+Examples:
 
 - `icecast::core` should not require a native HTTP or publishing library;
 - native listener/admin support may require libcurl;
 - native publisher support may require libshout;
 - browser transport is relevant to Emscripten builds and should not burden native-only consumers.
 
-Do not make an optional module's dependency globally mandatory when the module is not being built.
+Do not make an optional module's dependency globally mandatory when that module is not enabled.
 
 ## Dependency resolution order
 
-For each dependency required by an enabled component, CMake should resolve it in this order:
+When actual third-party dependencies are wired into CMake, each dependency required by an enabled component must be resolved in this order:
 
-1. **Already-provided target** — reuse a compatible CMake target that the parent project has already defined.
-2. **Explicit source/package hint** — honor a user-provided path, package hint, or a path supplied by `build.py`.
-3. **Repository-local dependency checkout** — when a compatible dependency exists in `dependencies/`, reuse it rather than fetching another copy.
-4. **Installed/system package** — use normal CMake package discovery when a compatible installation is available.
-5. **FetchContent fallback** — if the dependency is still missing and fetching is enabled, obtain the project's pinned immutable revision.
-6. **Actionable failure** — if the dependency is required for an enabled component and fetching is disabled, stop configuration with a message explaining what is missing and the supported ways to provide it.
+1. **Already-provided target** — reuse a compatible CMake target already defined by the parent project.
+2. **Explicit source/package hint** — honor a user-provided path/package hint or the source variable supplied by `build.py`.
+3. **Repository-local dependency checkout** — reuse a compatible source tree beneath `ICECAST_CXX_DEPENDENCIES_DIR`.
+4. **Installed/system package** — use normal CMake package discovery when compatible.
+5. **FetchContent fallback** — if still missing and fetching is enabled, obtain the pinned immutable revision.
+6. **Actionable failure** — if required and fetching is disabled, fail with clear instructions for supplying the dependency.
 
-Do not unconditionally invoke `FetchContent_MakeAvailable()` before giving parent projects a chance to supply dependencies.
+Do not call `FetchContent_MakeAvailable()` unconditionally before parent-provided targets and local/system packages have been considered.
 
-## Fetch controls
+`ICECAST_CXX_FETCH_DEPENDENCIES` defaults to `ON`. When it is `OFF`, CMake configuration must remain network-free.
 
-Automatic fetching of missing dependencies should default to **ON** for convenience.
+Per-dependency fetch switches may be introduced when the first real dependencies are added, but they should complement rather than replace the global switch.
 
-The eventual CMake interface should provide:
+## Dependency pins and `dependencies.json`
 
-- a global switch that can disable all automatic dependency downloads;
-- per-dependency switches for advanced configurations;
-- module/backend enable/disable options so dependencies are only resolved when their consumer is enabled.
+`dependencies.json` is the authoritative machine-readable manifest for dependency source revisions used by `build.py`.
 
-Exact cache-variable names should be chosen deliberately when CMake implementation begins. Once released, option names become part of the developer-facing compatibility surface and should not be renamed casually.
+The current schema is version 1:
 
-When fetching is disabled, CMake configuration should remain fully network-free.
+```json
+{
+  "schema_version": 1,
+  "dependencies": []
+}
+```
 
-## Immutable dependency versions
+Git dependencies added to the manifest are expected to provide fields such as:
 
-All automatically downloaded dependencies must be pinned to immutable release tags that are guaranteed immutable by project policy or, preferably when certainty is required, exact commit hashes.
+- `name`;
+- `type` (`git`, currently the only supported type);
+- `repository`;
+- `revision` — an exact immutable commit SHA;
+- optional `directory`;
+- optional `cmake_source_variable` passed to CMake after preparation.
 
-Never follow `master`, `main`, `develop`, or another moving branch in reproducible project configuration.
+Keep revision pins exact. Do not use `main`, `master`, `develop`, or another moving branch.
 
-Keep the authoritative dependency revisions in one obvious location so `build.py`, CMake fallback fetching, CI, and release tooling do not silently drift to different versions.
+When a real dependency is introduced, CMake's FetchContent revision and `dependencies.json` must refer to the same immutable source revision. Avoid creating separate unsynchronized version constants.
 
 ## `dependencies/`
 
-A repository-local `dependencies/` directory will hold dependency source trees downloaded by `build.py`.
+`dependencies/` contains dependency source trees prepared by `build.py`.
 
 Requirements:
 
-- it must be git-ignored;
-- it is local build/development state, never vendored source committed accidentally;
-- CMake should recognize compatible dependency sources there and prefer them over downloading another copy;
-- source layout beneath the directory should be deterministic enough for `build.py` and CMake to agree on locations;
-- changing a pinned dependency revision must invalidate/reconcile a stale local checkout clearly rather than silently building the wrong revision.
+- it remains git-ignored;
+- it is local build/development state, not vendored source;
+- CMake should prefer compatible sources there before downloading another copy;
+- `build.py` refuses to replace a checkout at the wrong revision when that checkout has local modifications;
+- offline builds must fail clearly when the requested pinned source is unavailable locally.
 
-Do not assume every consumer of `icecast-cxx` has this directory. It is primarily for repository-local builds.
+Do not assume normal downstream consumers have this directory.
 
 ## `build.py`
 
-`build.py` is the convenience gateway for building the full project from a source checkout.
+`build.py` is the convenience gateway for building this repository. CMake remains the build-system source of truth.
 
-The expected simple path is:
+The normal path is:
 
 ```console
 python build.py
 ```
 
-The script should eventually support a useful `--help` interface and explicit configuration without requiring users to memorize raw CMake invocations.
+The implemented script currently:
 
-Its responsibilities are to:
+1. reads `dependencies.json`;
+2. prepares exact Git revisions in `dependencies/`;
+3. passes configured local source variables to CMake;
+4. configures the appropriate native or web component set;
+5. builds with CMake;
+6. runs CTest unless disabled.
 
-1. determine which dependency sources are required for the requested build;
-2. download/check out the project's pinned revisions into `dependencies/`;
-3. pass explicit local dependency hints to CMake so those sources are used instead of CMake downloading them again;
-4. configure the requested platform/modules/backends;
-5. invoke the CMake build;
-6. report failures with actionable context.
+Useful switches include:
 
-`build.py` must not become a second independent build system. CMake remains the source of truth for how targets are configured and built; the script orchestrates dependency preparation and CMake invocation.
+- `--platform native|web`;
+- `--configuration`;
+- `--generator`;
+- `--jobs`;
+- `--target`;
+- `--clean`;
+- `--offline`;
+- `--no-tests`;
+- `--configure-only`;
+- repeatable `--cmake-arg` for advanced escape hatches.
 
-Normal downstream CMake users must **not** need Python merely to consume `icecast-cxx`.
+`--platform web` uses Emscripten's `emcmake` and therefore requires it on `PATH`.
+
+Normal downstream CMake users must not need Python to consume the library.
 
 ## Supported CMake consumption modes
 
-The project should behave correctly in all common CMake integration styles.
+### FetchContent
 
-### `FetchContent`
+A parent project can declare `icecast-cxx`, enable the backend(s) it needs through cache options, call `FetchContent_MakeAvailable()`, and link namespaced targets.
 
-A parent project should be able to declare `icecast-cxx`, make it available, and link namespaced targets.
+When nested:
 
-When nested this way:
-
-- do not assume `icecast-cxx` is the top-level project;
-- avoid changing unrelated global CMake settings;
-- avoid forcing project-wide compiler flags on the parent;
-- do not build tests/examples/tools by default unless explicitly requested;
-- reuse dependencies already supplied by the parent when compatible.
+- do not assume `icecast-cxx` is top-level;
+- do not change unrelated global CMake settings;
+- do not force project-wide compiler flags;
+- tests/install/developer tools should not appear unexpectedly;
+- heavyweight backends remain opt-in;
+- reuse compatible dependencies already supplied by the parent.
 
 ### Git submodule + `add_subdirectory`
 
-A checked-out repository nested under a parent source tree should work with an ordinary `add_subdirectory()` call.
+A checked-out repository nested under a parent source tree must work with an ordinary `add_subdirectory()` call and the same option semantics as FetchContent.
 
-Apply the same nested-project rules as FetchContent.
+### Downloaded release source/ZIP + `add_subdirectory`
 
-### Downloaded release archive/ZIP + `add_subdirectory`
-
-A source archive should not require Git metadata or submodules merely to configure. If dependency source retrieval is needed and enabled, CMake should use the documented fallback mechanism.
+A release archive must not require Git metadata or repository submodules merely to configure. CMake-managed dependency fallback should work from source archives when enabled.
 
 ### Installed CMake package
 
-The project should eventually provide install/export support with a package config and namespaced imported targets.
+The scaffold already exports installed targets through:
 
-An installed `icecast-cxx` package should not unexpectedly run FetchContent inside a downstream consumer's configure step. Installed-package dependency behavior should use normal package dependencies/imported targets appropriate to the packaged artifact.
+- `icecast-cxxConfig.cmake`;
+- `icecast-cxxConfigVersion.cmake`;
+- `icecast-cxxTargets.cmake`.
+
+Installed packages must not unexpectedly run FetchContent in downstream consumers. Once backend dependencies are real, package config files should locate required external package targets using normal installed-package mechanisms.
 
 ## Target design
 
-Public target names should be stable, namespaced, and responsibility-oriented.
-
-Current candidates include:
+Current consumer-facing target names are:
 
 - `icecast::core`
 - `icecast::stream`
@@ -139,45 +195,46 @@ Current candidates include:
 - `icecast::publish_libshout`
 - `icecast::transport_web`
 
-The exact target graph is not frozen yet. Avoid creating unnecessary tiny targets, but keep heavyweight/legally distinct backend dependencies separable so consumers do not inherit what they do not use.
+These currently map to INTERFACE targets solely to establish and test the build surface. As implementation begins, convert components to compiled targets only when they gain source code; do not add dummy object files merely to make them non-INTERFACE.
 
-Public targets should propagate only the usage requirements their consumers genuinely need. Backend implementation dependencies should remain private whenever public headers do not expose them.
+Public targets must propagate only usage requirements consumers genuinely need. Backend implementation dependencies should remain private whenever public headers do not expose them.
 
 ## Static and shared builds
 
-The project is intended to support both static and shared library builds where technically practical.
+Compiled project libraries are intended to support static and shared builds where practical. The current INTERFACE scaffold does not yet exercise this.
 
-Do not assume that static and shared linkage have identical third-party licensing/distribution implications. In particular, dependency packaging and future Python wheel builds must be reviewed against each dependency's license.
-
-Avoid source-level design that unnecessarily prevents either linkage model.
+Do not assume static and shared linkage have identical third-party licensing/distribution implications, particularly for libshout and future Python wheel packaging.
 
 ## Platform configuration
 
-First-class target platforms are planned to include:
+First-class planned targets are:
 
 - Windows;
 - macOS;
 - Linux;
 - Emscripten/WebAssembly.
 
-Keep platform-specific compiler/linker behavior localized. Do not scatter platform checks throughout semantic/public modules when a backend target can own them.
+Keep platform-specific compiler/linker behavior localized in backend/build files. Do not scatter platform checks through semantic public modules.
 
-Emscripten builds must use browser-appropriate networking semantics; do not add native socket dependencies to browser targets merely because they are convenient on desktop platforms.
+Native curl/libshout targets are rejected in Emscripten configurations. The web transport target is rejected in non-Emscripten configurations.
 
-## Tests, examples, and development tools
+## Tests and validation
 
-When implementation begins:
+The scaffold currently configures CTest and includes a minimal configuration smoke test.
 
-- tests should be easy to enable for a top-level developer checkout;
-- tests should default off or otherwise avoid surprising parent projects when `icecast-cxx` is nested;
-- examples should not be required to consume the library;
-- test-only dependencies must not leak into installed/public targets;
-- real Icecast integration tests should be separable from fast unit tests.
+As implementation grows:
+
+- add fast unit tests alongside each semantic component;
+- keep test-only dependencies out of public/install targets;
+- make real Icecast integration tests separately selectable;
+- validate both top-level and embedded CMake configurations;
+- validate installation followed by a downstream `find_package(icecast-cxx CONFIG REQUIRED)` configure;
+- validate dependency-provided, local-source, system-package, FetchContent, and fully-offline paths for each external dependency.
 
 ## Other build systems
 
 CMake is the only planned first-party build system for initial releases.
 
-Do not add another build system speculatively. Users who need Meson, Bazel, another build system, or additional package-manager integration should be encouraged to open an issue or submit a pull request.
+Do not add another build system speculatively. Users who need Meson, Bazel, another build system, or package-manager integration should be encouraged to open an issue or submit a pull request.
 
-Any added build system should preserve the same module boundaries, optional-dependency behavior, pinned dependency revisions, and install/consumer semantics rather than creating a divergent project layout.
+Any future build system must preserve the same module boundaries, optional-dependency behavior, pinned revisions, and consumer semantics rather than creating a divergent project structure.
