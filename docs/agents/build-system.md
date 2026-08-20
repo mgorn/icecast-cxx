@@ -14,13 +14,14 @@ The repository now contains a working initial build scaffold:
 - root `CMakeLists.txt`;
 - `cmake/icecast-cxx-options.cmake`;
 - install/export package generation;
-- namespaced INTERFACE target placeholders;
+- a real compiled `icecast::core` target with installed public headers;
+- namespaced INTERFACE placeholders for the not-yet-implemented stream/admin/backend components;
 - `dependencies.json` as the dependency-pin manifest;
 - `build.py` as the repository build gateway;
-- `tests/CMakeLists.txt` with initial CTest plumbing;
+- CTest plumbing with fast core unit tests;
 - git-ignored repository-local `dependencies/` state.
 
-The component targets are currently INTERFACE placeholders. Preserve their consumer-facing names while replacing them with real compiled targets as implementation is introduced.
+`icecast::core` is now a real library and must continue to support both build-tree and installed-package consumption. `stream`, `admin`, and backend targets remain INTERFACE placeholders until they gain actual implementation source. Preserve the consumer-facing target names while replacing placeholders incrementally.
 
 ## Current CMake options
 
@@ -51,7 +52,7 @@ A third-party library may be required by an enabled backend without being requir
 
 Examples:
 
-- `icecast::core` should not require a native HTTP or publishing library;
+- `icecast::core` has no third-party runtime dependency;
 - native listener/admin support may require libcurl;
 - native publisher support may require libshout;
 - browser transport is relevant to Emscripten builds and should not burden native-only consumers.
@@ -182,6 +183,8 @@ The scaffold already exports installed targets through:
 - `icecast-cxxConfigVersion.cmake`;
 - `icecast-cxxTargets.cmake`.
 
+The `icecast::core` install includes its static/shared library and the public header file set beneath `include/icecast/`.
+
 Installed packages must not unexpectedly run FetchContent in downstream consumers. Once backend dependencies are real, package config files should locate required external package targets using normal installed-package mechanisms.
 
 ## Target design
@@ -195,13 +198,13 @@ Current consumer-facing target names are:
 - `icecast::publish_libshout`
 - `icecast::transport_web`
 
-These currently map to INTERFACE targets solely to establish and test the build surface. As implementation begins, convert components to compiled targets only when they gain source code; do not add dummy object files merely to make them non-INTERFACE.
+`icecast::core` is compiled. The remaining targets are INTERFACE placeholders solely to establish and test the intended build surface. Convert a placeholder to a compiled target when it gains real source code; do not add dummy object files merely to make it non-INTERFACE.
 
 Public targets must propagate only usage requirements consumers genuinely need. Backend implementation dependencies should remain private whenever public headers do not expose them.
 
 ## Static and shared builds
 
-Compiled project libraries are intended to support static and shared builds where practical. The current INTERFACE scaffold does not yet exercise this.
+`icecast::core` supports both static and shared builds through normal CMake `BUILD_SHARED_LIBS` behavior. Public non-template symbols use the core export macro so Windows shared builds can use explicit DLL import/export semantics without broad auto-export behavior.
 
 Do not assume static and shared linkage have identical third-party licensing/distribution implications, particularly for libshout and future Python wheel packaging.
 
@@ -220,7 +223,7 @@ Native curl/libshout targets are rejected in Emscripten configurations. The web 
 
 ## Tests and validation
 
-The scaffold currently configures CTest and includes a minimal configuration smoke test.
+CTest now contains a fast `icecast_cxx.core` unit-test executable covering the implemented core semantics.
 
 As implementation grows:
 
@@ -228,7 +231,8 @@ As implementation grows:
 - keep test-only dependencies out of public/install targets;
 - make real Icecast integration tests separately selectable;
 - validate both top-level and embedded CMake configurations;
-- validate installation followed by a downstream `find_package(icecast-cxx CONFIG REQUIRED)` configure;
+- validate static and shared builds for compiled modules;
+- validate installation followed by a downstream `find_package(icecast-cxx CONFIG REQUIRED)` build;
 - validate dependency-provided, local-source, system-package, FetchContent, and fully-offline paths for each external dependency.
 
 ## Other build systems

@@ -2,14 +2,15 @@
 
 This file applies to the entire `icecast-cxx` repository.
 
-`icecast-cxx` is currently in the **early implementation phase**. The build/package scaffold exists, while the public C++ API and Icecast networking implementation are still being designed and added incrementally. Read the project README and the focused guidance under [`docs/agents/`](docs/agents/) before making changes.
+`icecast-cxx` is currently in the **early implementation phase**. The build/package scaffold and foundational `icecast::core` API exist, while streaming, administrative, and transport functionality are still being designed and added incrementally. Read the project README and the focused guidance under [`docs/agents/`](docs/agents/) before making changes.
 
 ## Before changing the project
 
 1. Read [`README.md`](README.md) for the intended developer experience and current implementation status.
 2. Read [`docs/agents/architecture.md`](docs/agents/architecture.md) before changing public boundaries, module responsibilities, networking semantics, threading, ownership, or platform behavior.
-3. Read [`docs/agents/build-system.md`](docs/agents/build-system.md) before changing CMake, dependencies, packaging, `build.py`, or platform configuration.
-4. Read [`docs/agents/cpp-style.md`](docs/agents/cpp-style.md) before writing or reviewing C++.
+3. Read [`docs/agents/core-api.md`](docs/agents/core-api.md) before changing foundational endpoint, credential, header, result/error, or capability models.
+4. Read [`docs/agents/build-system.md`](docs/agents/build-system.md) before changing CMake, dependencies, packaging, `build.py`, or platform configuration.
+5. Read [`docs/agents/cpp-style.md`](docs/agents/cpp-style.md) before writing or reviewing C++.
 
 When a task conflicts with these documents, do not silently pick a new architecture. Call out the conflict and update the specification deliberately if the requested change is accepted.
 
@@ -17,7 +18,7 @@ When a task conflicts with these documents, do not silently pick a new architect
 
 Implementation should proceed in explicitly scoped layers. A documented future target, option, or API is not by itself permission to invent the implementation behind it.
 
-The repository currently has a CMake/package scaffold, namespaced INTERFACE target placeholders, a dependency manifest, and the `build.py` developer gateway. Those pieces are real implementation and should be kept working as later modules become compiled libraries.
+The repository currently has a CMake/package scaffold, dependency manifest, `build.py` developer gateway, and a real compiled `icecast::core` library. `stream`, `admin`, and transport/publishing targets remain placeholders until their implementation phase begins.
 
 Foundational decisions should not be made ad hoc while coding. In particular, discuss and document changes involving:
 
