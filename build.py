@@ -10,16 +10,21 @@ those sources are reused instead of fetched a second time.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = ROOT / "dependencies.json"
+ARCHIVE_MARKER = ".icecast-cxx-dependency.json"
 
 
 class build_error(RuntimeError):
@@ -52,7 +57,7 @@ def load_dependency_manifest() -> list[dict[str, Any]]:
     except FileNotFoundError as error:
         raise build_error(f"missing dependency manifest: {MANIFEST_PATH}") from error
     except json.JSONDecodeError as error:
-        raise build_error(f"invalid dependency manifest: {error}") from error
+        raise build_error(f"invalid dependencies.json: {error}") from error
 
     if data.get("schema_version") != 1:
         raise build_error("unsupported dependencies.json schema_version")
@@ -84,6 +89,16 @@ def dependency_applies_to_platform(dependency: dict[str, Any], platform: str) ->
             name = dependency.get("name", "<unnamed>")
             raise build_error(f"dependency {name!r} has an invalid platforms field")
     return platform in platforms
+
+
+def dependency_source_result(dependency: dict[str, Any], destination: Path) -> tuple[str, Path] | None:
+    source_variable = dependency.get("cmake_source_variable")
+    if source_variable is None:
+        return None
+    if not isinstance(source_variable, str) or not source_variable:
+        name = dependency.get("name", "<unnamed>")
+        raise build_error(f"dependency {name!r} has an invalid cmake_source_variable")
+    return source_variable, destination
 
 
 def git_head(directory: Path) -> str:
@@ -136,13 +151,121 @@ def checkout_git_dependency(dependency: dict[str, Any], dependencies_dir: Path, 
             f"dependency {name!r} resolved to {actual_revision}, expected exact revision {revision}"
         )
 
-    source_variable = dependency.get("cmake_source_variable")
-    if source_variable is None:
-        return None
-    if not isinstance(source_variable, str) or not source_variable:
-        raise build_error(f"dependency {name!r} has an invalid cmake_source_variable")
+    return dependency_source_result(dependency, destination)
 
-    return source_variable, destination
+
+def archive_marker_data(dependency: dict[str, Any]) -> dict[str, str]:
+    return {
+        "name": require_manifest_string(dependency, "name"),
+        "url": require_manifest_string(dependency, "url"),
+        "sha256": require_manifest_string(dependency, "sha256").lower(),
+    }
+
+
+def archive_destination_matches(dependency: dict[str, Any], destination: Path) -> bool:
+    marker_path = destination / ARCHIVE_MARKER
+    if not marker_path.is_file():
+        return False
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return marker == archive_marker_data(dependency)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while chunk := file.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def download_file(url: str, destination: Path) -> None:
+    print(f"+ download {url}")
+    try:
+        with urllib.request.urlopen(url) as response, destination.open("wb") as output:
+            shutil.copyfileobj(response, output)
+    except OSError as error:
+        raise build_error(f"failed to download {url}: {error}") from error
+
+
+def safe_extract_tar(archive: Path, destination: Path) -> Path:
+    destination.mkdir(parents=True, exist_ok=True)
+    root = destination.resolve()
+
+    try:
+        with tarfile.open(archive, "r:*") as tar:
+            members = tar.getmembers()
+            top_levels: set[str] = set()
+            for member in members:
+                member_path = Path(member.name)
+                if member_path.is_absolute() or (".." in member_path.parts):
+                    raise build_error(f"archive contains unsafe path: {member.name}")
+                if member.issym() or member.islnk():
+                    raise build_error(f"archive contains unsupported link entry: {member.name}")
+                if member_path.parts:
+                    top_levels.add(member_path.parts[0])
+                target = (destination / member_path).resolve()
+                if (target != root) and (root not in target.parents):
+                    raise build_error(f"archive contains unsafe path: {member.name}")
+            tar.extractall(destination)
+    except (tarfile.TarError, OSError) as error:
+        raise build_error(f"failed to extract archive {archive}: {error}") from error
+
+    if len(top_levels) != 1:
+        raise build_error("dependency archive must contain exactly one top-level directory")
+    extracted_root = destination / next(iter(top_levels))
+    if not extracted_root.is_dir():
+        raise build_error("dependency archive top-level entry is not a directory")
+    return extracted_root
+
+
+def checkout_archive_dependency(dependency: dict[str, Any], dependencies_dir: Path, *, offline: bool) -> tuple[str, Path] | None:
+    name = require_manifest_string(dependency, "name")
+    url = require_manifest_string(dependency, "url")
+    expected_sha256 = require_manifest_string(dependency, "sha256").lower()
+    if len(expected_sha256) != 64 or any(character not in "0123456789abcdef" for character in expected_sha256):
+        raise build_error(f"dependency {name!r} has an invalid sha256 field")
+
+    directory_name = dependency.get("directory", name)
+    if not isinstance(directory_name, str) or not directory_name:
+        raise build_error(f"dependency {name!r} has an invalid directory field")
+    destination = dependencies_dir / directory_name
+
+    if destination.exists():
+        if archive_destination_matches(dependency, destination):
+            return dependency_source_result(dependency, destination)
+        if not (destination / ARCHIVE_MARKER).exists():
+            print(f"Using developer-provided dependency source at {destination}")
+            return dependency_source_result(dependency, destination)
+        raise build_error(
+            f"dependency {name!r} at {destination} was prepared from a different archive; "
+            "refusing to replace it automatically. Remove that directory explicitly to refresh it."
+        )
+
+    if offline:
+        raise build_error(f"dependency {name!r} is missing at {destination} while --offline is active")
+
+    dependencies_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"icecast-cxx-{name}-", dir=dependencies_dir) as temporary:
+        temporary_path = Path(temporary)
+        archive_path = temporary_path / "source.archive"
+        extract_path = temporary_path / "extract"
+        download_file(url, archive_path)
+        actual_sha256 = sha256_file(archive_path)
+        if actual_sha256 != expected_sha256:
+            raise build_error(
+                f"dependency {name!r} archive checksum mismatch: got {actual_sha256}, expected {expected_sha256}"
+            )
+        extracted_root = safe_extract_tar(archive_path, extract_path)
+        shutil.move(str(extracted_root), str(destination))
+
+    (destination / ARCHIVE_MARKER).write_text(
+        json.dumps(archive_marker_data(dependency), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return dependency_source_result(dependency, destination)
 
 
 def prepare_dependencies(dependencies_dir: Path, *, offline: bool, platform: str) -> list[tuple[str, Path]]:
@@ -157,11 +280,13 @@ def prepare_dependencies(dependencies_dir: Path, *, offline: bool, platform: str
             continue
 
         dependency_type = dependency.get("type", "git")
-        if dependency_type != "git":
+        if dependency_type == "git":
+            source = checkout_git_dependency(dependency, dependencies_dir, offline=offline)
+        elif dependency_type == "archive":
+            source = checkout_archive_dependency(dependency, dependencies_dir, offline=offline)
+        else:
             name = dependency.get("name", "<unnamed>")
             raise build_error(f"unsupported dependency type {dependency_type!r} for {name!r}")
-
-        source = checkout_git_dependency(dependency, dependencies_dir, offline=offline)
         if source is not None:
             cmake_sources.append(source)
 
@@ -190,7 +315,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--target", action="append", default=[])
     parser.add_argument("--cmake-arg", action="append", default=[])
     parser.add_argument("--clean", action="store_true", help="remove the selected build directory before configuring")
-    parser.add_argument("--offline", action="store_true", help="disable all dependency downloads, including CMake FetchContent fallback")
+    parser.add_argument("--offline", action="store_true", help="disable all dependency downloads, including CMake dependency fallbacks")
     parser.add_argument("--no-tests", action="store_true")
     parser.add_argument("--configure-only", action="store_true")
     return parser.parse_args()

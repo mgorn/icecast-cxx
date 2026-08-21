@@ -2,17 +2,18 @@
 
 This file applies to the entire `icecast-cxx` repository.
 
-`icecast-cxx` is in early implementation. The build/package scaffold, `icecast::core`, transport-independent `icecast::stream`, and the native libcurl listener backend are real implementation. Administration, source publishing, and browser networking remain future layers.
+`icecast-cxx` is in early implementation. The build/package scaffold, `icecast::core`, transport-independent `icecast::stream`, the native libcurl listener backend, and the native libshout publisher backend are real implementation. Administration and browser networking remain future layers.
 
 ## Before changing the project
 
 1. Read [`README.md`](README.md) for current status and developer-facing usage.
 2. Read [`docs/agents/architecture.md`](docs/agents/architecture.md) before changing module boundaries, media/protocol responsibility, transport strategy, threading, or ownership.
 3. Read [`docs/agents/core-api.md`](docs/agents/core-api.md) before changing core value/error/capability models.
-4. Read [`docs/agents/stream-api.md`](docs/agents/stream-api.md) before changing stream configuration, state, reconnect, backpressure, or ICY behavior.
+4. Read [`docs/agents/stream-api.md`](docs/agents/stream-api.md) before changing stream configuration, state, reconnect, backpressure, publisher write semantics, or ICY behavior.
 5. Read [`docs/agents/transport-curl.md`](docs/agents/transport-curl.md) before changing native listener networking or libcurl integration.
-6. Read [`docs/agents/build-system.md`](docs/agents/build-system.md) before changing CMake, dependencies, packaging, `dependencies.json`, or `build.py`.
-7. Read [`docs/agents/cpp-style.md`](docs/agents/cpp-style.md) before writing or reviewing C++.
+6. Read [`docs/agents/publish-libshout.md`](docs/agents/publish-libshout.md) before changing native source publishing or libshout integration.
+7. Read [`docs/agents/build-system.md`](docs/agents/build-system.md) before changing CMake, dependencies, packaging, `dependencies.json`, or `build.py`.
+8. Read [`docs/agents/cpp-style.md`](docs/agents/cpp-style.md) before writing or reviewing C++.
 
 When a task conflicts with these documents, do not silently choose a new architecture. Surface the conflict and update the documented decision deliberately when the change is accepted.
 
@@ -24,7 +25,9 @@ When a task conflicts with these documents, do not silently choose a new archite
 - Native and browser transports may differ internally while sharing genuinely portable stream semantics.
 - Consumers only acquire backend dependencies for the backends they enable.
 - Listener transports reuse `icecast::stream` state, reconnect, ICY, and backpressure semantics rather than reimplementing them.
-- No hidden worker thread per listener. Native curl progress is caller-driven through `curl_context::poll()`.
+- Native listener progress is caller-driven through `curl_context::poll()`; native publisher progress is caller-driven through `libshout_context::poll()`.
+- Publisher queues are bounded and never silently drop encoded bytes.
+- An interrupted source publication is terminal for that logical encoded stream. Do not blindly reconnect and continue mid-container.
 - Do not copy GPL-licensed Icecast server implementation code.
 
 ## Developer experience
@@ -35,4 +38,4 @@ Treat developer convenience as a primary design constraint. Prefer strong defaul
 
 Keep changes focused. Do not commit fetched dependencies or build artifacts. `dependencies/` is git-ignored local state.
 
-Update README/agent guidance with externally visible behavior. New dependencies must be pinned in `dependencies.json`; do not create an independent version constant elsewhere.
+Update README/agent guidance with externally visible behavior. Source dependency pins belong in `dependencies.json`; do not create independent revision/checksum constants elsewhere.

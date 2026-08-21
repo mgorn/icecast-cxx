@@ -177,8 +177,47 @@ if(ICECAST_CXX_ENABLE_TRANSPORT_CURL)
 endif()
 
 if(ICECAST_CXX_ENABLE_PUBLISH_LIBSHOUT)
-    icecast_cxx_add_interface_component(publish_libshout)
-    target_link_libraries(icecast_publish_libshout INTERFACE icecast::stream)
+    include(cmake/icecast-cxx-libshout.cmake)
+    icecast_cxx_resolve_libshout()
+
+    add_library(
+        icecast_publish_libshout
+        src/publish_libshout/publisher.cxx
+    )
+    add_library(icecast::publish_libshout ALIAS icecast_publish_libshout)
+    set_target_properties(icecast_publish_libshout PROPERTIES EXPORT_NAME publish_libshout)
+    target_compile_features(icecast_publish_libshout PUBLIC cxx_std_20)
+    target_include_directories(
+        icecast_publish_libshout
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+    target_link_libraries(
+        icecast_publish_libshout
+        PUBLIC
+            icecast::stream
+        PRIVATE
+            $<BUILD_INTERFACE:Shout::shout>
+            $<INSTALL_INTERFACE:Shout::shout>
+    )
+    target_sources(
+        icecast_publish_libshout
+        PUBLIC
+            FILE_SET HEADERS
+            BASE_DIRS include
+            FILES
+                include/icecast/publish_libshout.hxx
+                include/icecast/publish_libshout/export.hxx
+                include/icecast/publish_libshout/publisher.hxx
+    )
+    get_target_property(_icecast_cxx_publish_libshout_type icecast_publish_libshout TYPE)
+    if(_icecast_cxx_publish_libshout_type STREQUAL "SHARED_LIBRARY")
+        target_compile_definitions(icecast_publish_libshout PRIVATE ICECAST_CXX_PUBLISH_LIBSHOUT_BUILDING PUBLIC ICECAST_CXX_PUBLISH_LIBSHOUT_SHARED)
+    endif()
+    unset(_icecast_cxx_publish_libshout_type)
+    list(APPEND _icecast_cxx_export_targets icecast_publish_libshout)
+    list(APPEND _icecast_cxx_compiled_export_targets icecast_publish_libshout)
 endif()
 
 if(ICECAST_CXX_ENABLE_TRANSPORT_WEB)
@@ -196,6 +235,11 @@ endif()
 set(ICECAST_CXX_CONFIG_HAS_TRANSPORT_CURL OFF)
 if(ICECAST_CXX_ENABLE_TRANSPORT_CURL)
     set(ICECAST_CXX_CONFIG_HAS_TRANSPORT_CURL ON)
+endif()
+
+set(ICECAST_CXX_CONFIG_HAS_PUBLISH_LIBSHOUT OFF)
+if(ICECAST_CXX_ENABLE_PUBLISH_LIBSHOUT)
+    set(ICECAST_CXX_CONFIG_HAS_PUBLISH_LIBSHOUT ON)
 endif()
 
 if(ICECAST_CXX_INSTALL)

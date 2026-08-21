@@ -19,6 +19,17 @@ enum struct stream_action {
     stop,
 };
 
+enum struct publisher_write_status {
+    accepted,
+    would_block,
+    closed,
+};
+
+struct publisher_write_result {
+    std::size_t accepted = 0;
+    publisher_write_status status = publisher_write_status::accepted;
+};
+
 struct stream_metadata {
     std::optional<std::string> name;
     std::optional<std::string> description;

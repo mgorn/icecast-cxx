@@ -73,6 +73,9 @@ result<void> validate_publisher_config(const publisher_config& config) {
     if (auto value = validate_basic_credentials(config.credentials); not value) {
         return value;
     }
+    if (config.credentials.password.empty()) {
+        return result<void>::failure(config_error("validate publisher configuration", "publisher password cannot be empty"));
+    }
     if (config.content_type.empty()) {
         return result<void>::failure(config_error("validate publisher configuration", "publisher content type cannot be empty"));
     }

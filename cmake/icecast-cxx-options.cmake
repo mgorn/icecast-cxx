@@ -17,6 +17,7 @@ option(ICECAST_CXX_BUILD_TESTS "Build icecast-cxx tests" ${_icecast_cxx_top_leve
 option(ICECAST_CXX_INSTALL "Generate icecast-cxx install and package-export rules" ${_icecast_cxx_top_level_default})
 option(ICECAST_CXX_FETCH_DEPENDENCIES "Allow icecast-cxx to fetch missing dependencies" ON)
 option(ICECAST_CXX_FETCH_CURL "Allow icecast-cxx to fetch libcurl when the curl transport is enabled and curl is otherwise unavailable" ON)
+option(ICECAST_CXX_FETCH_LIBSHOUT "Allow icecast-cxx to fetch libshout when native publishing is enabled and libshout is otherwise unavailable" ON)
 
 option(ICECAST_CXX_ENABLE_STREAM "Enable the icecast::stream component" ON)
 option(ICECAST_CXX_ENABLE_ADMIN "Enable the icecast::admin component" ON)
@@ -28,14 +29,21 @@ set(
     ICECAST_CXX_DEPENDENCIES_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/dependencies"
     CACHE PATH
-    "Repository-local dependency source directory used before FetchContent"
+    "Repository-local dependency source directory used before automatic dependency downloads"
 )
 
 set(
     ICECAST_CXX_CURL_SOURCE_DIR
     ""
     CACHE PATH
-    "Explicit libcurl source directory used before repository-local, installed, or FetchContent dependency resolution"
+    "Explicit libcurl source directory used before repository-local, installed, or automatic dependency resolution"
+)
+
+set(
+    ICECAST_CXX_LIBSHOUT_SOURCE_DIR
+    ""
+    CACHE PATH
+    "Explicit prepared libshout release source directory used before repository-local, installed, or automatic dependency resolution"
 )
 
 unset(_icecast_cxx_top_level_default)

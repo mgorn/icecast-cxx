@@ -14,9 +14,9 @@ The convenience header is:
 
 Focused headers live under `include/icecast/stream/`:
 
-- `models.hxx` — listener/publisher configuration, stream metadata/info, and consumer actions;
+- `models.hxx` — listener/publisher configuration, stream metadata/info, listener consumer actions, and publisher write results;
 - `reconnect.hxx` — listener reconnect policy and deterministic base-delay calculation;
-- `state.hxx` — listener lifecycle state/generation semantics and publisher state vocabulary;
+- `state.hxx` — listener lifecycle state/generation semantics and publisher lifecycle vocabulary;
 - `icy.hxx` — ICY metadata framing, byte demultiplexing, raw metadata views, and best-effort field parsing;
 - `export.hxx` — shared-library visibility declarations.
 
@@ -24,19 +24,53 @@ Focused headers live under `include/icecast/stream/`:
 
 `listener_config` contains a server endpoint, mountpoint, optional Basic credentials, additional request headers, ICY metadata intent, and reconnect policy. Use `validate_listener_config()` before transport work.
 
-The library owns protocol headers that would conflict with these models. Custom listener headers must not override `Host`, `Authorization`, or `Icy-MetaData`; transports synthesize those values from the semantic configuration.
+The library owns protocol headers that would conflict with these models. Custom listener headers must not override `Host`, `Authorization`, `Accept-Encoding`, or `Icy-MetaData`; transports synthesize those values from the semantic configuration.
 
 ## Publisher configuration
 
 `publisher_config` describes an already encoded/muxed source stream. It does not encode, mux, pace, or inspect media payloads.
 
-The default source username is `source`, matching the conventional Icecast source login. A non-empty password and content type are still required by `validate_publisher_config()`.
+The default source username is `source`, matching the conventional Icecast source login. A non-empty password and content type are required by `validate_publisher_config()`.
 
-The model also contains optional stream-level name/description/genre/URL values, public/private directory intent, additional request headers, and `max_buffered_bytes` (256 KiB by default) as the semantic bound for future publisher queueing.
+The model also contains optional stream-level name/description/genre/URL values, public/private directory intent, additional request headers, and `max_buffered_bytes` (256 KiB by default) as the semantic upper bound for publisher buffering.
 
 The following publisher headers are managed by `icecast-cxx` and cannot be overridden through `request_headers`: `Host`, `Authorization`, `Content-Type`, `Content-Length`, `Transfer-Encoding`, `Ice-Public`, `Ice-Name`, `Ice-Description`, `Ice-Genre`, and `Ice-Url`.
 
-Publisher interruption remains explicit. This layer does not implement blind publisher auto-reconnect because a fresh connection may require a new logical encoded/container stream.
+A specific backend may support fewer extension headers than the semantic model. For example, libshout does not expose arbitrary source-request headers, so `icecast::publish_libshout` rejects non-empty custom publisher headers explicitly rather than silently ignoring them.
+
+## Publisher writes and backpressure
+
+Publisher backends use `publisher_write_result`:
+
+```text
+accepted     all provided bytes were accepted
+would_block a prefix may have been accepted; caller retains the remainder
+closed       the logical publication no longer accepts bytes
+```
+
+`accepted` is always the exact prefix length taken from the caller's span. Backends must never claim bytes they did not retain/send and must never silently drop bytes.
+
+`max_buffered_bytes` is a bound across application-side and backend-owned pending bytes where the backend can observe both. A backend must not treat an unbounded third-party queue as outside the limit merely because that queue is internal to the dependency.
+
+A publisher may accept bytes while connecting, subject to the same bound, so callers can begin filling a small queue before the source handshake completes.
+
+## Publisher lifecycle
+
+The publisher lifecycle vocabulary is:
+
+```text
+idle
+connecting
+publishing
+stopping
+stopped
+interrupted
+failed
+```
+
+`stopped` is a normal terminal state. `failed` means the publication could not become a usable established stream or encountered a non-stream-interruption terminal failure. `interrupted` means an established publication was broken by a connection/TLS/protocol/server failure.
+
+Publisher interruption is terminal for that logical encoded stream. This project does not blindly reconnect a source and continue from the middle of the previous container. A caller may create a new publisher after preparing a fresh logical publication/container generation.
 
 ## Listener reconnect policy
 
@@ -44,9 +78,7 @@ Publisher interruption remains explicit. This layer does not implement blind pub
 
 `max_attempts` counts reconnection attempts after the current/initial connection; `std::nullopt` means unlimited.
 
-`reconnect_base_delay()` returns the deterministic exponential delay before jitter. Randomness/scheduling stays with the future execution context instead of becoming a dependency of the semantic model.
-
-Call `validate_reconnect_policy()` before use. Backends should apply jitter without exceeding sensible duration bounds.
+`reconnect_base_delay()` returns the deterministic exponential delay before jitter. Randomness/scheduling stays with the execution/transport context instead of becoming a dependency of the semantic model.
 
 ## Listener state and connection generation
 
@@ -66,11 +98,9 @@ Use `transition_listener()` rather than hand-editing status in backends. Invalid
 
 Every successful transition from `connecting` to `streaming` increments `connection_generation`. Reconnecting is a new physical stream connection, so downstream decoders/demuxers can use the generation change to reset state.
 
-`publisher_state` currently defines publisher lifecycle vocabulary only. Add a publisher state machine together with the first real publisher backend rather than inventing reconnect semantics prematurely.
+## Listener consumer backpressure
 
-## Consumer backpressure
-
-Streaming callbacks use `stream_action`: `continue_stream`, `pause`, or `stop`.
+Listening callbacks use `stream_action`: `continue_stream`, `pause`, or `stop`.
 
 When a parser returns `pause` or `stop`, `stream_consume_result.consumed` tells the transport exactly how many input bytes were already accepted. The remainder must not be discarded. A transport must not continue reading indefinitely after the consumer asks to pause.
 
@@ -101,26 +131,8 @@ These spans borrow the decoder's internal buffer and are valid only until the de
 
 `parse_icy_metadata()` creates an owned `icy_metadata` containing the complete raw block, payload size, and best-effort parsed key/value fields. Field names are case-insensitive for lookup. Field values remain bytes; the stream layer does not guess Latin-1, UTF-8, or another historic ICY character encoding.
 
-Parsing is intentionally tolerant. Malformed metadata must not corrupt the media byte stream, and callers retain the raw block even when not every field can be interpreted.
-
-## Transport backend requirements
-
-A future listener transport backend should:
-
-1. validate `listener_config`;
-2. perform HTTP/TLS/authentication according to the backend/platform;
-3. normalize response information into `stream_info`;
-4. inspect `icy-metaint` when ICY was requested;
-5. feed response-body bytes through `icy_stream_decoder` when framing is active;
-6. forward only encoded media spans to the media consumer;
-7. honor `stream_action` and `stream_consume_result.consumed` exactly;
-8. use `listener_status` / `transition_listener()` for lifecycle changes;
-9. apply `reconnect_policy` without hiding connection-generation changes.
-
-Do not duplicate the ICY state machine inside libcurl or browser-specific code.
-
 ## Tests
 
 Stream unit tests cover reconnect validation/delay, configuration and managed-header protection, listener transitions/generations, ICY-disabled pass-through, one-byte input fragmentation, zero-length metadata, raw metadata preservation, case-insensitive field lookup, apostrophes in quoted values, and pause/resume at an interval boundary.
 
-Keep these tests transport-free. Real HTTP/Icecast integration tests belong with the transport layer.
+Backend-specific publication behavior belongs in backend tests, not in this transport-independent layer.

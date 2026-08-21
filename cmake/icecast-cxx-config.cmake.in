@@ -20,6 +20,24 @@ if(@ICECAST_CXX_CONFIG_HAS_TRANSPORT_CURL@ AND NOT TARGET CURL::libcurl)
     endif()
 endif()
 
+if(@ICECAST_CXX_CONFIG_HAS_PUBLISH_LIBSHOUT@ AND NOT TARGET Shout::shout)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(ICECAST_CXX_PACKAGE_SHOUT QUIET IMPORTED_TARGET GLOBAL "shout>=2.4.4")
+        if(TARGET PkgConfig::ICECAST_CXX_PACKAGE_SHOUT)
+            add_library(Shout::shout INTERFACE IMPORTED GLOBAL)
+            set_property(TARGET Shout::shout PROPERTY INTERFACE_LINK_LIBRARIES PkgConfig::ICECAST_CXX_PACKAGE_SHOUT)
+        endif()
+    endif()
+
+    if(NOT TARGET Shout::shout)
+        message(FATAL_ERROR
+            "This icecast-cxx package includes icecast::publish_libshout and requires libshout >= 2.4.4. "
+            "Provide a Shout::shout target or install the shout pkg-config development package before find_package(icecast-cxx)."
+        )
+    endif()
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/icecast-cxxTargets.cmake")
 
 check_required_components(icecast-cxx)

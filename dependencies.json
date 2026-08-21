@@ -9,6 +9,16 @@
       "directory": "curl",
       "cmake_source_variable": "ICECAST_CXX_CURL_SOURCE_DIR",
       "platforms": ["native"]
+    },
+    {
+      "name": "libshout",
+      "type": "archive",
+      "version": "2.4.6",
+      "url": "https://downloads.xiph.org/releases/libshout/libshout-2.4.6.tar.gz",
+      "sha256": "39cbd4f0efdfddc9755d88217e47f8f2d7108fa767f9d58a2ba26a16d8f7c910",
+      "directory": "libshout",
+      "cmake_source_variable": "ICECAST_CXX_LIBSHOUT_SOURCE_DIR",
+      "platforms": ["native"]
     }
   ]
 }
